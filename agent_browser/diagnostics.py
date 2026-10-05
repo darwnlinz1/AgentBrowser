@@ -1,0 +1,149 @@
+import time
+import json
+from typing import Dict, Any, List, Optional
+
+
+class DiagnosticEngine:
+    """
+    Automated Root Cause Diagnostics & Bug Reproduction Generator.
+    Analyzes causal correlations between user actions, network failures, and runtime exceptions.
+    """
+    def __init__(self, dom_engine, network_engine, runtime_engine, storage_engine, tracer):
+        self.dom = dom_engine
+        self.network = network_engine
+        self.runtime = runtime_engine
+        self.storage = storage_engine
+        self.tracer = tracer
+
+    async def run_diagnostics(self) -> Dict[str, Any]:
+        """
+        Executes a deep diagnostic health check on the current session.
+        """
+        issues = []
+        recommendations = []
+
+        # 1. Check for uncaught runtime exceptions
+        exceptions = self.runtime.get_exceptions(limit=10)
+        for ex in exceptions:
+            issues.append({
+                "severity": "CRITICAL",
+                "category": "RUNTIME_EXCEPTION",
+                "message": ex.get("description") or ex.get("text"),
+                "location": f"{ex.get('url')}:{ex.get('line')}:{ex.get('column')}",
+                "stack": ex.get("stack")
+            })
+
+        # 2. Check for failing network requests (4xx, 5xx, or network failure)
+        recent_requests = self.network.search_traffic(limit=30)
+        failing_requests = []
+        for r in recent_requests:
+            status = r.get("status")
+            if status == "FAILED":
+                failing_requests.append(r)
+                issues.append({
+                    "severity": "HIGH",
+                    "category": "NETWORK_FAILURE",
+                    "message": f"{r.get('method')} {r.get('url')} failed: {r.get('error_text')}",
+                    "details": r
+                })
+            elif isinstance(status, int) and status >= 400:
+                failing_requests.append(r)
+                issues.append({
+                    "severity": "HIGH",
+                    "category": "HTTP_ERROR",
+                    "message": f"{r.get('method')} {r.get('url')} returned HTTP {status}",
+                    "details": {
+                        "status": status,
+                        "url": r.get("url"),
+                        "response_preview": str(r.get("response_body"))[:300]
+                    }
+                })
+
+        # 3. Correlate runtime exceptions with network failures
+        for ex in exceptions:
+            ex_desc = (ex.get("description") or "").lower()
+            for fr in failing_requests:
+                fr_url = fr.get("url", "").lower()
+                # If exception mentions undefined properties right after an API failure
+                if any(k in ex_desc for k in ("cannot read properties of undefined", "null is not an object", "fetch failed")):
+                    recommendations.append(
+                        f"Root Cause Correlation: JS exception '{ex.get('description')[:80]}' is likely caused by failed network request: {fr.get('method')} {fr.get('url')} (Status: {fr.get('status')}). Check API response or add defensive null checks."
+                    )
+
+        # 4. Check console errors
+        console_errors = self.runtime.get_console_messages(level="error", limit=10)
+        for ce in console_errors:
+            text = ce.get("text", "")
+            if any(term in text.lower() for term in ("cors", "access-control-allow-origin")):
+                issues.append({
+                    "severity": "HIGH",
+                    "category": "CORS_POLICY",
+                    "message": text
+                })
+                recommendations.append("CORS blocked request. Inspect server Access-Control-Allow-Origin headers or use agent_browser interceptor to tamper origin.")
+            elif "content security policy" in text.lower():
+                issues.append({
+                    "severity": "MEDIUM",
+                    "category": "CSP_VIOLATION",
+                    "message": text
+                })
+
+        snapshot = await self.dom.get_interactive_snapshot()
+
+        return {
+            "timestamp": time.time(),
+            "url": snapshot.get("url"),
+            "title": snapshot.get("title"),
+            "health": "UNHEALTHY" if issues else "HEALTHY",
+            "total_issues": len(issues),
+            "issues": issues,
+            "root_cause_analysis": recommendations or ["No automated root-cause patterns detected. System is running nominally."]
+        }
+
+    async def generate_reproduction_script(self, target_url: str, failing_action: Dict[str, Any]) -> str:
+        """
+        Generates a standalone, reproducible Python test script for the detected bug.
+        """
+        action_type = failing_action.get("type", "click")
+        selector = failing_action.get("target", "")
+
+        script = f'''#!/usr/bin/env python3
+"""
+Automated Bug Reproduction Script
+Generated by AgentBrowser Platform
+Target URL: {target_url}
+"""
+
+import asyncio
+from agent_browser.agent_api import AgentBrowserController
+
+async def reproduce():
+    controller = AgentBrowserController(headless=True)
+    await controller.start()
+    try:
+        print("[*] Navigating to {target_url}...")
+        await controller.navigate("{target_url}")
+        
+        print("[*] Executing action '{action_type}' on '{selector}'...")
+        trace = await controller.trace_action("{action_type}", target="{selector}")
+        
+        print("[*] Trace result:")
+        print(f"    Success: {{trace['action']['success']}}")
+        print(f"    Network requests: {{trace['network']['requests_triggered_count']}}")
+        print(f"    Failing requests: {{trace['network']['failing_requests_count']}}")
+        print(f"    Runtime exceptions: {{trace['runtime']['exceptions_count']}}")
+        
+        if trace['runtime']['exceptions_count'] > 0 or trace['network']['failing_requests_count'] > 0:
+            print("[!] BUG CONFIRMED REPRODUCED!")
+            return False
+        else:
+            print("[+] Action executed without errors.")
+            return True
+    finally:
+        await controller.stop()
+
+if __name__ == "__main__":
+    success = asyncio.run(reproduce())
+    exit(0 if success else 1)
+'''
+        return script

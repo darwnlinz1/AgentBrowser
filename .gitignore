@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Browser profiles and captures
+debug_browser_profile/
+*.log
+debug_traffic.jsonl
+debug_hits.json
+debug_page_scan.json
+captured_page_dom.html
+captured_cookies.json
+*.png
