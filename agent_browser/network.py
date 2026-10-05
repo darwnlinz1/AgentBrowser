@@ -121,6 +121,8 @@ class NetworkEngine:
                 "response_body": None,
                 "mime_type": None,
                 "duration_ms": None,
+                "request_cookies": [],
+                "request_cookie_header": None,
                 "_start_time": params.get("timestamp")
             }
             self.requests[req_id] = entry
@@ -128,6 +130,19 @@ class NetworkEngine:
             if len(self.traffic_order) > self._max_history:
                 old_id = self.traffic_order.pop(0)
                 self.requests.pop(old_id, None)
+
+        # 1.1 Request extra info (contains wire headers including Cookie header and associatedCookies)
+        elif method == "Network.requestWillBeSentExtraInfo":
+            req_id = params.get("requestId")
+            if req_id in self.requests:
+                entry = self.requests[req_id]
+                wire_headers = params.get("headers", {})
+                entry["headers"].update(wire_headers)
+                entry["request_cookies"] = params.get("associatedCookies", [])
+                for hk, hv in wire_headers.items():
+                    if hk.lower() == "cookie":
+                        entry["request_cookie_header"] = hv
+                        break
 
         # 2. Response received
         elif method == "Network.responseReceived":
@@ -141,6 +156,14 @@ class NetworkEngine:
                 entry["mime_type"] = resp.get("mimeType")
                 entry["remote_ip"] = resp.get("remoteIPAddress")
                 entry["remote_port"] = resp.get("remotePort")
+
+        # 2.1 Response extra info (contains wire headers including Set-Cookie)
+        elif method == "Network.responseReceivedExtraInfo":
+            req_id = params.get("requestId")
+            if req_id in self.requests:
+                entry = self.requests[req_id]
+                extra_headers = params.get("headers", {})
+                entry["response_headers"].update(extra_headers)
 
         # 3. Loading finished -> fetch body
         elif method == "Network.loadingFinished":
