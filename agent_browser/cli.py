@@ -7,6 +7,12 @@ import subprocess
 import time
 from typing import Optional, Dict, Any
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 DEFAULT_SERVER_URL = "http://127.0.0.1:9224"
 
 
