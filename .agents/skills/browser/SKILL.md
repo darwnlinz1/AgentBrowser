@@ -34,6 +34,12 @@ All commands can be executed directly via terminal using:
 | `cookies` | `python -m agent_browser cookies [--set "k=v;domain=..."]` | Inspects or sets cookies |
 | `storage` | `python -m agent_browser storage [--type local|session]` | Inspects or sets LocalStorage / SessionStorage |
 | `mutate-dom`| `python -m agent_browser mutate-dom <sel> <action> [--kwargs <json>]` | Modifies attributes, styles, or HTML of live elements |
+| `pin` | `python -m agent_browser pin <selector> [--alias <name>]` | Pins a specific element/region of interest to watch |
+| `unpin` | `python -m agent_browser unpin <alias_or_selector>` | Unpins a previously watched region |
+| `focus-view`| `python -m agent_browser focus-view` | Inspects only pinned elements and their recent deltas |
+| `user-events`| `python -m agent_browser user-events [--limit N]` | Retrieves human user actions (pixel, selector, timestamp) |
+| `last-action`| `python -m agent_browser last-action` | Gets the single most recent user action performed on page |
+| `watch` | `python -m agent_browser watch` | Directed dashboard combining pinned regions + last action |
 | `screenshot`| `python -m agent_browser screenshot [--output file.png]` | Captures page viewport or full scrollable screenshot |
 | `stop` | `python -m agent_browser stop` | Gracefully closes browser session and background daemon |
 
@@ -108,6 +114,32 @@ When a page is broken or misbehaving:
    - Downstream JavaScript exceptions (`TypeError: Cannot read properties of undefined`)
    - CORS or CSP policy violations
    - Root-cause attribution and recommended remedies.
+
+### Runbook F: Tracking Human Actions in Real-Time
+When the user is interacting on the site and the Agent needs to observe what was done:
+1. Inspect the last user action:
+   ```powershell
+   python -m agent_browser last-action
+   ```
+2. Retrieve the stream of recent interactions (pixel coords, exact CSS selector, event type):
+   ```powershell
+   python -m agent_browser user-events --limit 10
+   ```
+
+### Runbook G: Directed Focus Pinning (Zero Token Waste)
+Instead of forcing the Agent to read a 50,000-token HTML document, pin specific regions:
+1. Pin the area under investigation (e.g. cart or checkout form):
+   ```powershell
+   python -m agent_browser pin "#checkout-container" --alias "checkout"
+   ```
+2. Read only the focused region and detect recent mutations:
+   ```powershell
+   python -m agent_browser focus-view
+   ```
+3. Use the directed dashboard to observe both user action and region changes together:
+   ```powershell
+   python -m agent_browser watch
+   ```
 
 ---
 

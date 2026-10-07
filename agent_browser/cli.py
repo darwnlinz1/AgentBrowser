@@ -176,6 +176,29 @@ def main():
     dom_mut.add_argument("action", choices=["set_attribute", "remove_attribute", "set_html", "set_text", "set_style", "remove_node"])
     dom_mut.add_argument("--kwargs", default="{}", help="JSON arguments for mutation")
 
+    # user-events
+    ue_p = subparsers.add_parser("user-events", help="View real-time captured human user interactions")
+    ue_p.add_argument("--limit", type=int, default=20, help="Max events to return")
+    ue_p.add_argument("--type", default=None, help="Filter event type: click, change, scroll")
+
+    # last-action
+    subparsers.add_parser("last-action", help="Get the most recent human action on page")
+
+    # pin
+    pin_p = subparsers.add_parser("pin", help="Pin a specific DOM selector/region to watch")
+    pin_p.add_argument("selector", help="CSS selector of element to pin")
+    pin_p.add_argument("--alias", default=None, help="Optional short alias name")
+
+    # unpin
+    unpin_p = subparsers.add_parser("unpin", help="Unpin a previously watched region")
+    unpin_p.add_argument("target", help="Alias or selector to unpin")
+
+    # focus-view
+    subparsers.add_parser("focus-view", help="View content and deltas of pinned regions only")
+
+    # watch
+    subparsers.add_parser("watch", help="Directed debugging dashboard: focused regions + last action")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -366,6 +389,38 @@ def main():
             server_url=args.server
         )
         print(json.dumps(res, indent=2))
+
+    elif args.command == "user-events":
+        params = {"limit": args.limit}
+        if args.type:
+            params["event_type"] = args.type
+        res = make_request("GET", "/user/actions", params, server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "last-action":
+        res = make_request("GET", "/user/last_action", server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "pin":
+        res = make_request("POST", "/focus/pin", {"selector": args.selector, "alias": args.alias}, server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "unpin":
+        res = make_request("POST", "/focus/unpin", {"target": args.target}, server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "focus-view":
+        res = make_request("GET", "/focus/view", server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "watch":
+        last_act = make_request("GET", "/user/last_action", server_url=args.server)
+        focus_view = make_request("GET", "/focus/view", server_url=args.server)
+        dashboard = {
+            "last_user_action": last_act.get("last_action"),
+            "focused_regions": focus_view
+        }
+        print(json.dumps(dashboard, indent=2))
 
 
 if __name__ == "__main__":

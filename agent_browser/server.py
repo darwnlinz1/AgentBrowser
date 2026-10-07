@@ -266,6 +266,62 @@ async def take_screenshot(s: ScreenshotModel):
     return {"screenshot_path": path}
 
 
+class PinModel(BaseModel):
+    selector: str
+    alias: Optional[str] = None
+
+
+class UnpinModel(BaseModel):
+    target: str
+
+
+@app.get("/user/actions")
+async def get_user_actions(limit: int = Query(20), event_type: Optional[str] = Query(None)):
+    ctrl = require_controller()
+    return {"actions": ctrl.user_tracker.get_actions(limit=limit, event_type=event_type)}
+
+
+@app.get("/user/last_action")
+async def get_user_last_action():
+    ctrl = require_controller()
+    act = ctrl.user_tracker.get_last_action()
+    return {"last_action": act}
+
+
+@app.post("/user/clear_actions")
+async def clear_user_actions():
+    ctrl = require_controller()
+    ctrl.user_tracker.clear()
+    return {"status": "cleared"}
+
+
+@app.post("/focus/pin")
+async def pin_element(p: PinModel):
+    ctrl = require_controller()
+    name = ctrl.focus.pin(p.selector, alias=p.alias)
+    return {"status": "pinned", "alias": name, "selector": p.selector}
+
+
+@app.post("/focus/unpin")
+async def unpin_element(u: UnpinModel):
+    ctrl = require_controller()
+    ok = ctrl.focus.unpin(u.target)
+    return {"status": "unpinned" if ok else "not_found", "target": u.target}
+
+
+@app.get("/focus/view")
+async def get_focus_view():
+    ctrl = require_controller()
+    return await ctrl.focus.get_focused_view()
+
+
+@app.post("/focus/clear")
+async def clear_focus():
+    ctrl = require_controller()
+    ctrl.focus.clear()
+    return {"status": "cleared"}
+
+
 def run_server(host: str = "127.0.0.1", port: int = 9224):
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

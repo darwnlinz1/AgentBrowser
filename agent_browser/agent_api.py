@@ -10,6 +10,8 @@ from agent_browser.runtime import RuntimeEngine
 from agent_browser.tracer import ActionTracer
 from agent_browser.storage import StorageEngine
 from agent_browser.diagnostics import DiagnosticEngine
+from agent_browser.user_tracker import UserTracker
+from agent_browser.focus import FocusEngine
 
 
 class AgentBrowserController:
@@ -33,6 +35,8 @@ class AgentBrowserController:
         self.tracer: Optional[ActionTracer] = None
         self.storage: Optional[StorageEngine] = None
         self.diagnostics: Optional[DiagnosticEngine] = None
+        self.user_tracker: Optional[UserTracker] = None
+        self.focus: Optional[FocusEngine] = None
         self._running = False
 
     def get_active_session_id(self) -> Optional[str]:
@@ -51,6 +55,8 @@ class AgentBrowserController:
         self.tracer = ActionTracer(self.cdp, self.dom, self.network, self.runtime, self.get_active_session_id)
         self.storage = StorageEngine(self.cdp, self.get_active_session_id)
         self.diagnostics = DiagnosticEngine(self.dom, self.network, self.runtime, self.storage, self.tracer)
+        self.user_tracker = UserTracker(self.cdp, self.get_active_session_id)
+        self.focus = FocusEngine(self.cdp, self.get_active_session_id)
 
         # Wire event handlers
         self.cdp.add_event_handler(self._on_cdp_event)
@@ -82,6 +88,7 @@ class AgentBrowserController:
         await self.cdp.send("DOM.enable", {}, session_id=sid)
         await self.network.enable_network()
         await self.runtime.enable()
+        await self.user_tracker.enable()
 
     async def _on_cdp_event(self, data: Dict[str, Any]):
         method = data.get("method", "")
@@ -106,6 +113,8 @@ class AgentBrowserController:
             await self.network.handle_cdp_event(data)
         if self.runtime:
             await self.runtime.handle_cdp_event(data)
+        if self.user_tracker:
+            await self.user_tracker.handle_cdp_event(data)
 
     async def navigate(self, url: str) -> Dict[str, Any]:
         if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("about:"):
@@ -114,6 +123,9 @@ class AgentBrowserController:
         res = await self.cdp.send("Page.navigate", {"url": url}, session_id=sid)
         # Settle wait
         await asyncio.sleep(1.0)
+        # Re-inject tracker if needed
+        if self.user_tracker:
+            await self.user_tracker.inject_tracker()
         return res
 
     async def get_agent_view(self) -> str:
