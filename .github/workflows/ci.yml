@@ -1,9 +1,11 @@
 name: CI
 
 # Chrome-free gate battery: the same curated suites the local loop runs
-# before every commit. Live-Chrome harnesses (fixtures/run_*_live.py,
-# test_suite.py) stay local/manual because they need a real browser
-# profile on the machine under test.
+# before every commit. The live-corpus job additionally runs the seeded
+# fault corpus and the integration suite against the runner's real
+# Chrome (headless), so attribution metrics gate the PR too. The heavier
+# live harnesses (daemon smoke, interventional, journal minimize) stay
+# local/manual.
 on:
   pull_request:
   push:
@@ -32,3 +34,19 @@ jobs:
           test_fault_corpus.py test_benchmark_harness.py
           test_docs_coherence.py test_evidence_and_isolation.py
           -q
+
+  live-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (dev + fast codec)
+        run: python -m pip install -e ".[dev,fast]"
+      - name: Browser under test
+        run: google-chrome --version || chromium --version || chromium-browser --version
+      - name: Live fault corpus (attribution P/R, dropped events)
+        run: python fixtures/run_live_corpus.py
+      - name: Live integration suite
+        run: python test_suite.py
