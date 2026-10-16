@@ -151,9 +151,12 @@ class AgentBrowserController:
         self.network = NetworkEngine(self.cdp, self.get_active_session_id)
         self.network.smart_filter = self.smart_filter
         self.runtime = RuntimeEngine(self.cdp, self.get_active_session_id)
+        from agent_browser.timer_ledger import ledger_enabled_from_env
+
         self.tracer = ActionTracer(self.cdp, self.dom, self.network, self.runtime, self.get_active_session_id,
                                    activity_monitor=self.activity_monitor,
-                                   strict_probe=os.environ.get("AGENTBROWSER_STRICT_SETTLE", "").strip().lower() in ("1", "true", "yes", "on"))
+                                   strict_probe=os.environ.get("AGENTBROWSER_STRICT_SETTLE", "").strip().lower() in ("1", "true", "yes", "on"),
+                                   timer_ledger=ledger_enabled_from_env())
         self.storage = StorageEngine(self.cdp, self.get_active_session_id)
         self.diagnostics = DiagnosticEngine(self.dom, self.network, self.runtime, self.storage, self.tracer)
         self.user_tracker = UserTracker(self.cdp, self.get_active_session_id)

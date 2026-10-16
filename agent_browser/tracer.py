@@ -113,7 +113,7 @@ class ActionTracer:
         "})()"
     )
 
-    def __init__(self, cdp_conn, dom_engine, network_engine, runtime_engine, active_session_id_getter, activity_monitor=None, strict_probe: bool = False):
+    def __init__(self, cdp_conn, dom_engine, network_engine, runtime_engine, active_session_id_getter, activity_monitor=None, strict_probe: bool = False, timer_ledger: bool = False):
         self.cdp = cdp_conn
         self.dom = dom_engine
         self.network = network_engine
@@ -124,6 +124,36 @@ class ActionTracer:
         # Opt-in strict mode: also require a deep idle callback (no timer
         # due within the idle window, no aria-busy region) before settling.
         self.strict_probe = strict_probe
+        # Opt-in observe-only timer ledger (main-world instrumentation;
+        # detectability tradeoff, so off unless explicitly enabled).
+        self.timer_ledger = timer_ledger
+        self._ledger_sessions: set = set()
+
+    async def _ensure_timer_ledger(self, sid) -> None:
+        if not self.timer_ledger or not sid or sid in self._ledger_sessions:
+            return
+        from agent_browser.timer_ledger import TIMER_LEDGER_JS
+
+        self._ledger_sessions.add(sid)
+        try:
+            await self.cdp.send("Page.addScriptToEvaluateOnNewDocument",
+                                {"source": TIMER_LEDGER_JS}, session_id=sid)
+        except Exception:
+            pass
+        try:
+            await self.runtime.evaluate(TIMER_LEDGER_JS)
+        except Exception:
+            pass
+
+    async def _timer_probe(self) -> Dict[str, Any]:
+        from agent_browser.timer_ledger import READ_LEDGER_JS, parse_ledger
+
+        try:
+            res = await self.runtime.evaluate(READ_LEDGER_JS)
+        except Exception:
+            return parse_ledger(None)
+        value = res.get("value") if isinstance(res, dict) else None
+        return parse_ledger(value)
 
     async def _settle(self, start_req_count: int, timeout_s: float, action_type: str = "") -> Dict[str, Any]:
         """Feed a QuiescenceTracker from the network buffer until quiet/cap."""
@@ -187,6 +217,21 @@ class ActionTracer:
                     break
                 seq_after = monitor.snapshot()["activity_seq"]
                 if seq_after == seq_before:
+                    if self.timer_ledger:
+                        from agent_browser.timer_ledger import timers_block_settle
+
+                        ledger = await self._timer_probe()
+                        result["timer_ledger"] = ledger
+                        if timers_block_settle(ledger):
+                            result["probe_verified"] = False
+                            if _time.monotonic() >= deadline:
+                                break
+                            result = await wait_for_quiescence(
+                                tracker, timeout_s=max(0.2, deadline - _time.monotonic()), poll=_poll)
+                            result["activity_source"] = "sync_monitor"
+                            if not result.get("settled"):
+                                break
+                            continue
                     if self.strict_probe:
                         idle_ok = await self._idle_probe()
                         result["idle_depth_ok"] = idle_ok
@@ -239,6 +284,7 @@ class ActionTracer:
         """
         params = params or {}
         sid = self.get_session_id()
+        await self._ensure_timer_ledger(sid)
 
         # 1. Capture Pre-action state
         pre_url = ""
