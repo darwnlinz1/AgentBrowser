@@ -57,6 +57,59 @@ class InterceptRule:
         return True
 
 
+_REGEX_HARD_META = set("|[](){}+?")
+
+
+def derive_cdp_url_pattern(regex_pattern: Optional[str]) -> Optional[str]:
+    """
+    Derive a CDP Fetch ``urlPattern`` glob that provably matches a SUPERSET
+    of the given rule regex, or return None when no proof is available.
+
+    Only a restricted regex shape is eligible: literal characters, escaped
+    literals, ``.*`` wildcards, and ``^``/``$`` anchors. For that shape the
+    longest literal run must appear verbatim in every matching URL, so
+    ``*<run>*`` can only over-match, never under-match. Anything with
+    alternation, character classes, quantifiers, or class escapes falls
+    back to None (caller uses ``*``), so narrowing can never make a rule
+    silently stop pausing its requests.
+    """
+    if not regex_pattern:
+        return None
+    runs: List[str] = []
+    current: List[str] = []
+    i = 0
+    n = len(regex_pattern)
+    while i < n:
+        ch = regex_pattern[i]
+        if ch == "\\":
+            if i + 1 >= n or regex_pattern[i + 1].isalnum():
+                return None  # \d \w \s \b ... are not literals
+            current.append(regex_pattern[i + 1])
+            i += 2
+            continue
+        if ch == "." and i + 1 < n and regex_pattern[i + 1] == "*":
+            if current:
+                runs.append("".join(current))
+                current = []
+            i += 2
+            continue
+        if ch in "^$":
+            i += 1
+            continue
+        if ch in _REGEX_HARD_META or ch in ".*":
+            return None
+        current.append(ch)
+        i += 1
+    if current:
+        runs.append("".join(current))
+    if not runs:
+        return None
+    longest = max(runs, key=len)
+    if len(longest) < 3:
+        return None
+    return f"*{longest}*"
+
+
 class NetworkEngine:
     """
     Agent-Native HTTP/HTTPS & WebSocket Traffic Engine.
@@ -66,6 +119,7 @@ class NetworkEngine:
         self.cdp = cdp_conn
         self.get_session_id = active_session_id_getter
         self.requests: Dict[str, Dict[str, Any]] = {}  # requestId -> entry
+        self.last_fetch_patterns: List[Dict[str, Any]] = []
         self.traffic_order: List[str] = []
         self.ws_frames: List[Dict[str, Any]] = []
         self.ws_sockets: Dict[str, Dict[str, Any]] = {}
@@ -243,17 +297,45 @@ class NetworkEngine:
             "maxResourceBufferSize": 25_000_000
         }, session_id=sid)
 
+    def _fetch_patterns(self, include_response: bool = False):
+        """
+        Fetch.enable patterns for the current rule set. Request-stage
+        patterns are narrowed to provable-superset globs derived from the
+        rules (cycle 53), so Chrome only pauses requests some rule could
+        match; any non-derivable rule widens the whole set back to '*'.
+        Python-side regex matching still makes the final decision, and
+        hermetic replay keeps '*' because it must pause everything.
+        Patterns are computed at enable time; callers re-enable after
+        adding rules (server/MCP already do).
+        """
+        rules = list(self.intercept_rules.values())
+        if not rules:
+            patterns = [{"urlPattern": "*", "requestStage": "Request"}]
+        else:
+            globs: List[str] = []
+            for rule in rules:
+                glob = derive_cdp_url_pattern(rule.url_pattern)
+                if glob is None:
+                    globs = ["*"]
+                    break
+                if glob not in globs:
+                    globs.append(glob)
+            patterns = [{"urlPattern": g, "requestStage": "Request"} for g in globs]
+        if include_response:
+            # Response stage unlocks match-and-replace on live responses;
+            # it stays wide because response rules may be added per-flow.
+            patterns.append({"urlPattern": "*", "requestStage": "Response"})
+        return patterns
+
     async def enable_interception(self, include_response: bool = False):
         sid = self.get_session_id()
-        # CDP Fetch.enable requires wildcard matching; using '*' allows python-side regex/filter matching
-        patterns = [{"urlPattern": "*", "requestStage": "Request"}]
-        if include_response:
-            # Response stage unlocks match-and-replace on live responses.
-            patterns.append({"urlPattern": "*", "requestStage": "Response"})
+        patterns = self._fetch_patterns(include_response)
+        self.last_fetch_patterns = patterns
         await self.cdp.send("Fetch.enable", {
             "patterns": patterns
         }, session_id=sid)
         self.interception_enabled = True
+        return patterns
 
     async def disable_interception(self):
         sid = self.get_session_id()
