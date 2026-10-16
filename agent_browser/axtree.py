@@ -60,6 +60,59 @@ def fingerprint(summary: Dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+_IDENTITY_FIELDS = ("role", "name")
+_CHANGE_FIELDS = ("role", "name", "value", "disabled", "checked", "expanded", "selected")
+
+
+def summarize_partial(nodes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Summarize the first node of an Accessibility.getPartialAXTree result."""
+    if not nodes:
+        return None
+    return node_summary(nodes[0])
+
+
+def ref_freshness(stored: Dict[str, Any], live: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Compare a stored AX ref against its current live summary.
+
+    Role/name are identity: if either changed, the ref is stale and must not
+    be acted on blindly. Value/state changes are reported as ``changed`` --
+    visible, but not by themselves proof that node identity moved.
+    """
+    if not live:
+        return {"status": "unknown", "identity_changed": False, "changes": {}}
+    changes = {
+        field: {"from": stored.get(field), "to": live.get(field)}
+        for field in _CHANGE_FIELDS
+        if stored.get(field) != live.get(field)
+    }
+    identity_changed = any(field in changes for field in _IDENTITY_FIELDS)
+    return {
+        "status": "stale" if identity_changed else ("changed" if changes else "fresh"),
+        "identity_changed": identity_changed,
+        "changes": changes,
+        "live_fingerprint": fingerprint(live),
+    }
+
+
+def find_reanchor(stored: Dict[str, Any], refs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Find a unique fresh ref with the stored identity (same role and name).
+
+    Zero or multiple matches fail closed; a guess between identical buttons
+    is exactly how stale refs click the wrong element.
+    """
+    candidates = [
+        ref for ref in refs
+        if ref.get("role") == stored.get("role") and ref.get("name") == stored.get("name")
+    ]
+    return {
+        "candidate": candidates[0] if len(candidates) == 1 else None,
+        "candidate_count": len(candidates),
+        "candidates": candidates[:5],
+    }
+
+
 def build_ref_table(ax_nodes: List[Dict[str, Any]], include_text: bool = False) -> List[Dict[str, Any]]:
     """Assign [#ref] numbers to actionable/named AX nodes, keyed by backend id."""
     refs: List[Dict[str, Any]] = []

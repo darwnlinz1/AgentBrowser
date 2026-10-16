@@ -1,7 +1,16 @@
 import json
 from typing import Dict, Any, List, Optional, Tuple
 
-from agent_browser.axtree import build_ref_table, diff_refs, merkle_hashes, render_budgeted_view, render_view
+from agent_browser.axtree import (
+    build_ref_table,
+    diff_refs,
+    find_reanchor,
+    merkle_hashes,
+    ref_freshness,
+    render_budgeted_view,
+    render_view,
+    summarize_partial,
+)
 from agent_browser.fingerprints import ElementFingerprint, resolve_fingerprint
 
 INTERACTIVE_SNAPSHOT_JS = r"""
@@ -167,26 +176,91 @@ class DOMEngine:
             pass
         return render_budgeted_view(snap["refs"], title=title, url=url, budget_tokens=budget_tokens)
 
+    async def _partial_ax_summary(self, backend_id: Any, sid: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Current live AX summary for one backend node, or None if unavailable."""
+        try:
+            res = await self.cdp.send(
+                "Accessibility.getPartialAXTree",
+                {"backendNodeId": backend_id, "fetchRelatives": False},
+                session_id=sid,
+            )
+            return summarize_partial(res.get("nodes") or [])
+        except Exception:
+            return None
+
     async def resolve_ax_ref(self, ref: int) -> Optional[Dict[str, Any]]:
-        """Resolve a [#ref] from the last AX snapshot to its live node info."""
+        """
+        Resolve a [#ref] from the last AX snapshot to its live node info.
+
+        The stored fingerprint is revalidated first: if role/name changed,
+        the ref is stale. A unique fresh ref with the same identity becomes
+        the reanchor target; zero or multiple matches fail closed.
+        """
         entry = next((r for r in self._ax_refs if r.get("ref") == ref), None)
         if not entry:
             return None
         sid = self.get_session_id()
         try:
+            live = await self._partial_ax_summary(entry["backend_id"], sid)
+            freshness = ref_freshness(entry, live)
+            effective = entry
+            reanchored = None
+            if freshness["identity_changed"]:
+                snap = await self.get_axtree_snapshot()
+                found = find_reanchor(entry, snap.get("refs") or [])
+                if not found["candidate"]:
+                    return {
+                        **entry,
+                        "resolved": False,
+                        "stale": True,
+                        "freshness": freshness,
+                        "reanchor_candidate_count": found["candidate_count"],
+                        "error": "stale AX ref: role/name changed and no unique reanchor exists",
+                    }
+                effective = found["candidate"]
+                reanchored = {
+                    "from_backend_id": entry.get("backend_id"),
+                    "to_backend_id": effective.get("backend_id"),
+                    "to_ref": effective.get("ref"),
+                }
+
             resolved = await self.cdp.send(
-                "DOM.resolveNode", {"backendNodeId": entry["backend_id"]}, session_id=sid
+                "DOM.resolveNode", {"backendNodeId": effective["backend_id"]}, session_id=sid
             )
             object_id = ((resolved.get("object") or {}).get("objectId"))
+            if not object_id and not reanchored:
+                # Node is gone (remounted). One reanchor attempt by identity.
+                snap = await self.get_axtree_snapshot()
+                found = find_reanchor(entry, snap.get("refs") or [])
+                candidate = found["candidate"]
+                if candidate and candidate.get("backend_id") != entry.get("backend_id"):
+                    effective = candidate
+                    reanchored = {
+                        "from_backend_id": entry.get("backend_id"),
+                        "to_backend_id": effective.get("backend_id"),
+                        "to_ref": effective.get("ref"),
+                        "reason": "node_gone",
+                    }
+                    resolved = await self.cdp.send(
+                        "DOM.resolveNode", {"backendNodeId": effective["backend_id"]}, session_id=sid
+                    )
+                    object_id = ((resolved.get("object") or {}).get("objectId"))
             if not object_id:
-                return {**entry, "resolved": False}
+                return {**effective, "resolved": False, "freshness": freshness, "reanchored": reanchored}
             described = await self.cdp.send("Runtime.callFunctionOn", {
                 "objectId": object_id,
                 "functionDeclaration": "function(){ const r=this.getBoundingClientRect(); return {tag:this.tagName.toLowerCase(), text:(this.innerText||this.textContent||'').trim().slice(0,120), rect:{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}}; }",
                 "returnByValue": True,
             }, session_id=sid)
             info = (((described.get("result") or {}).get("value")) or {})
-            return {**entry, "resolved": True, **info}
+            return {
+                **effective,
+                "resolved": True,
+                "object_id": object_id,
+                "freshness": freshness,
+                "reanchored": reanchored,
+                **info,
+            }
         except Exception as exc:
             return {**entry, "resolved": False, "error": str(exc)}
 
@@ -328,9 +402,12 @@ class DOMEngine:
         if not entry:
             raise ValueError(f"AX ref #{ref} not in the last accessibility snapshot.")
         sid = self.get_session_id()
-        resolved = await self.cdp.send(
-            "DOM.resolveNode", {"backendNodeId": entry["backend_id"]}, session_id=sid)
-        object_id = ((resolved.get("object") or {}).get("objectId"))
+        checked = await self.resolve_ax_ref(ref)
+        if not checked or not checked.get("resolved"):
+            reason = (checked or {}).get("error") or "stale or unresolved AX ref"
+            raise ValueError(f"AX ref #{ref} could not be clicked: {reason}")
+        entry = checked
+        object_id = checked.get("object_id")
         if not object_id:
             raise ValueError(f"AX ref #{ref} could not be resolved to a live node.")
         res = await self.cdp.send("Runtime.callFunctionOn", {
@@ -361,6 +438,8 @@ class DOMEngine:
             "via": "axtree",
             "coordinates": {"x": value.get("x"), "y": value.get("y")},
             "element": {"tag": value.get("tag"), "id": entry.get("name"), "text": value.get("text")},
+            "freshness": entry.get("freshness"),
+            "reanchored": entry.get("reanchored"),
         }
 
     async def click(self, selector: str, action_tag: Optional[str] = None) -> Dict[str, Any]:

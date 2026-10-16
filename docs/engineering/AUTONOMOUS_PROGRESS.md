@@ -221,3 +221,7 @@ Generated Python reproductions (synth.build_python_repro, diagnostics legacy + r
 ## 2026-10-15 commit (owner-approved scope)
 
 Committed 116f347 'feat: HYPER-BROWSER engine' (100 files, safe group + tracked engine files + SKILL/README/test_suite for coherence; standalone staged tree verified 132 passed before committing). Never-commit group excluded per COMMIT_REVIEW.md. Push blocked: no GitHub SSH key on this machine and HTTPS credential flow needs interactive sign-in -- owner to run: git push -u origin hyper/phase0-foundation, then open the compare URL in the PR step.
+
+## 2026-10-16 cycle 39: stale AX ref revalidation
+
+AX refs are revalidated against Accessibility.getPartialAXTree before resolve/click: role/name identity changes mark the ref stale; a unique fresh ref with the same identity becomes the reanchor target (including remounted/gone nodes), while zero or multiple matches fail closed instead of clicking a guess. Live on Chrome: a replaced button was reanchored from backendNodeId 8 to 13 and the click still fired its fetch.
