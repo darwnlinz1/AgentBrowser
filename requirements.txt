@@ -1,0 +1,13 @@
+# AgentBrowser core runtime dependencies.
+# See pyproject.toml for optional extras: [proxy], [fast], [mcp], [dev].
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+requests>=2.31
+websockets>=12
+
+# Optional extras (install explicitly when the matching feature is used):
+#   pip install "agent-browser[proxy]"   # mitmproxy universal capture
+#   pip install "agent-browser[fast]"    # msgspec fast transport (Phase P)
+#   pip install "agent-browser[mcp]"     # MCP server (Phase 2)
+#   pip install "agent-browser[dev]"     # pytest + pytest-asyncio

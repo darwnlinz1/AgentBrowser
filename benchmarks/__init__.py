@@ -1,0 +1,1 @@
+"""Competitor benchmark harness package."""

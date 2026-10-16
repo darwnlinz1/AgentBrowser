@@ -18,3 +18,31 @@ debug_page_scan.json
 captured_page_dom.html
 captured_cookies.json
 *.png
+
+# Browser profile directories
+profiles/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# Agent runtime (daemon auth tokens, run metadata)
+.agentbrowser/
+
+# Live secret captures & session/state dumps (NEVER commit)
+*cookies*.json
+*storage*.json
+*_state.json
+apollo_state.json
+paneer_*.json
+live_tab_cookies.json
+cart_data_raw.json
+
+# Captured traffic / journals / generated reproductions / dumps
+*.har
+journals/
+repro_out/
+repro/
+source_dump/
+agent_output/
+benchmarks/results/

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-browser"
+version = "0.1.0"
+description = "AgentBrowser: autonomous agent-native browser debugging, inspection, HTTP/network capture, and causal action tracing platform."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "darwnlinz1" }]
+keywords = ["cdp", "chrome-devtools-protocol", "browser-automation", "debugging", "mcp", "agent"]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pydantic>=2.5",
+    "requests>=2.31",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+# Universal MITM proxy capture (Firefox/Safari/curl/other clients).
+proxy = ["mitmproxy>=10"]
+# Phase P: zero-copy transport with fast (de)serialization.
+fast = ["msgspec>=0.18"]
+# Phase 2: expose AgentBrowser as a Model Context Protocol server.
+mcp = ["mcp>=1.0"]
+# Test toolchain.
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+agent-browser = "agent_browser.cli:main"
+
+[tool.setuptools]
+packages = ["agent_browser"]

@@ -1,0 +1,62 @@
+name: CI
+
+# Chrome-free gate battery: the same curated suites the local loop runs
+# before every commit. The live-corpus job additionally runs the full
+# live battery against the runner's real Chrome (headless): seeded fault
+# corpus, integration suite, daemon smoke, interventional promotion,
+# journal minimization, and the DebugLoop episode -- so browser-truth
+# metrics gate the PR too, not just unit suites.
+on:
+  pull_request:
+  push:
+    branches: [main, "hyper/**"]
+  workflow_dispatch:
+
+jobs:
+  chrome-free:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (dev + fast codec + mcp extras)
+        run: python -m pip install -e ".[dev,fast,mcp]"
+      - name: Chrome-free gates
+        shell: bash
+        run: >
+          python -m pytest
+          test_cycle*.py test_phase*.py
+          test_fault_corpus.py test_benchmark_harness.py
+          test_docs_coherence.py test_evidence_and_isolation.py
+          -q
+
+  live-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (dev + fast codec)
+        run: python -m pip install -e ".[dev,fast]"
+      - name: Browser under test
+        run: google-chrome --version || chromium --version || chromium-browser --version
+      - name: Live fault corpus (attribution P/R, dropped events)
+        run: python fixtures/run_live_corpus.py
+      - name: Live integration suite
+        run: python test_suite.py
+      - name: Daemon smoke (token auth, Origin guard, CLI)
+        run: python fixtures/run_daemon_smoke.py
+      - name: Interventional A/B promotion
+        run: python fixtures/run_intervention_live.py
+      - name: Journal-driven minimization
+        run: python fixtures/run_journal_minimize_live.py
+      - name: DebugLoop episode (OBSERVE..VERIFY)
+        run: python fixtures/run_debug_loop_live.py
+      - name: Replay fidelity (hermetic, zero live escapes)
+        run: python fixtures/run_replay_fidelity_live.py

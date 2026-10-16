@@ -137,8 +137,11 @@ async def run_integration_tests():
         print("[+] Action Trace Report (API Button):")
         print(f"    Requests triggered: {trace_api['network']['requests_triggered_count']}")
         print(f"    Request details: {json.dumps(trace_api['network']['requests'])}")
-        assert trace_api["network"]["requests_triggered_count"] >= 1, "Network request was not captured"
+        assert trace_api["network"]["requests_observed_count"] >= 1, "Network request was not captured"
         assert any("/api/data" in r["url"] for r in trace_api["network"]["requests"]), "Missing /api/data request"
+        # The click's fetch carries the action's stamped sourceURL in its async
+        # initiator chain, so it is proven (attributed), not merely temporal.
+        assert any(r.get("confidence") == "attributed" and r.get("caused_by_action") for r in trace_api["network"]["requests"])
         print("[PASS] Network causal tracing verified.")
 
         # TEST 4: Traffic Search and Replay
