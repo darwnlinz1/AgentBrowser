@@ -157,7 +157,7 @@ class AgentBrowserController:
         self.storage = StorageEngine(self.cdp, self.get_active_session_id)
         self.diagnostics = DiagnosticEngine(self.dom, self.network, self.runtime, self.storage, self.tracer)
         self.user_tracker = UserTracker(self.cdp, self.get_active_session_id)
-        self.focus = FocusEngine(self.cdp, self.get_active_session_id)
+        self.focus = FocusEngine(self.cdp, self.get_active_session_id, dom_engine=self.dom)
         self.source_inspector = SourceInspector(self.cdp, self.get_active_session_id)
         from agent_browser.perf import PerfEngine
 

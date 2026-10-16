@@ -632,7 +632,12 @@ async def unpin_element(u: UnpinModel):
 @app.get("/focus/view")
 async def get_focus_view():
     ctrl = require_controller()
-    return await ctrl.focus.get_focused_view()
+    view = await ctrl.focus.get_focused_view()
+    try:
+        view["ax_regions"] = await ctrl.focus.get_scoped_focused_view()
+    except Exception:
+        pass
+    return view
 
 
 @app.post("/focus/clear")

@@ -7,12 +7,28 @@ class FocusEngine:
     Directed Focus & Element Pinning System.
     Allows user or AI to pin specific subtrees/regions of interest to prevent reading full 50,000 token DOMs.
     """
-    def __init__(self, cdp_conn, active_session_id_getter):
+    def __init__(self, cdp_conn, active_session_id_getter, dom_engine=None):
         self.cdp = cdp_conn
         self.get_session_id = active_session_id_getter
+        self.dom = dom_engine
         self.pinned_selectors: Dict[str, str] = {}  # alias/name -> selector
         self.last_snapshots: Dict[str, str] = {}    # alias -> previous HTML sample
         self.last_lengths: Dict[str, int] = {}
+
+    async def get_scoped_focused_view(self) -> Dict[str, Any]:
+        """
+        AX-scoped re-read of every pin (queryAXTree per subtree, with diffs).
+        Cheaper and more semantic than re-reading outerHTML per pin.
+        """
+        if not self.dom:
+            return {"pinned_count": len(self.pinned_selectors), "regions": {}, "error": "no DOM engine"}
+        regions = {}
+        for alias, selector in self.pinned_selectors.items():
+            try:
+                regions[alias] = await self.dom.get_scoped_axtree(selector=selector)
+            except Exception as exc:
+                regions[alias] = {"error": str(exc)[:160], "selector": selector}
+        return {"pinned_count": len(self.pinned_selectors), "regions": regions}
 
     def pin(self, selector: str, alias: Optional[str] = None) -> str:
         name = alias or selector

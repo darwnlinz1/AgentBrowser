@@ -128,6 +128,7 @@ class DOMEngine:
         # Which snapshot minted the refs the agent last saw ('ax' | 'legacy').
         # Numeric #ref clicks route to the table that issued them.
         self._last_view_source: Optional[str] = None
+        self._scoped_refs: Dict[Any, List[Dict[str, Any]]] = {}
 
     async def get_axtree_snapshot(self, include_text: bool = False, include_layout: bool = False) -> Dict[str, Any]:
         """
@@ -176,6 +177,49 @@ class DOMEngine:
             "count": len(refs),
             "merkle_root": root_hash,
             "node_hashes": {str(k): v for k, v in self._ax_hashes.items()},
+            "diff_from_previous": diff_refs(previous, refs) if previous else None,
+        }
+
+    async def get_scoped_axtree(self, selector: Optional[str] = None,
+                                backend_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Scoped accessibility re-read of one subtree via
+        ``Accessibility.queryAXTree`` -- the cheap way to re-check a pinned
+        region without re-capturing the whole page. Returns refs for the
+        subtree plus a Merkle diff against the previous scoped read.
+        """
+        sid = self.get_session_id()
+        if backend_id is None:
+            if not selector:
+                raise ValueError("get_scoped_axtree needs a selector or backend_id")
+            if selector.startswith("#") and selector[1:].isdigit():
+                entry = next((r for r in self._ax_refs if r.get("ref") == int(selector[1:])), None)
+                if not entry:
+                    raise ValueError(f"AX ref {selector} not in the last snapshot")
+                backend_id = entry["backend_id"]
+            else:
+                expr = f"document.querySelector({json.dumps(selector)})"
+                res = await self.cdp.send("Runtime.evaluate", {"expression": expr}, session_id=sid)
+                object_id = ((res.get("result") or {}).get("objectId"))
+                if not object_id:
+                    raise ValueError(f"Element '{selector}' not found.")
+                described = await self.cdp.send("DOM.describeNode", {"objectId": object_id}, session_id=sid)
+                backend_id = ((described.get("node") or {}).get("backendNodeId"))
+                if not backend_id:
+                    raise ValueError(f"Element '{selector}' has no backend node id.")
+        res = await self.cdp.send(
+            "Accessibility.queryAXTree", {"backendNodeId": backend_id}, session_id=sid)
+        nodes = res.get("nodes") or []
+        refs = build_ref_table(nodes)
+        previous = self._scoped_refs.get(backend_id) or []
+        self._scoped_refs[backend_id] = refs
+        hashes = merkle_hashes(nodes)
+        root_hash = hashes.get(nodes[0].get("nodeId")) if nodes else None
+        return {
+            "backend_id": backend_id,
+            "refs": refs,
+            "count": len(refs),
+            "merkle_root": root_hash,
             "diff_from_previous": diff_refs(previous, refs) if previous else None,
         }
 
