@@ -24,6 +24,21 @@ def decode_ws_payload(payload: Optional[str], opcode: Optional[int] = None) -> D
         return {"kind": "empty", "heartbeat": False, "preview": ""}
     text = str(payload)
     if opcode == 2:
+        # CDP delivers binary frame payloads base64-encoded. Try a blackbox
+        # protobuf decode before falling back to an opaque binary label.
+        import base64
+
+        try:
+            raw = base64.b64decode(text, validate=False)
+        except Exception:
+            raw = b""
+        if raw:
+            from agent_browser.protobuf_decode import try_decode_protobuf
+
+            parsed = try_decode_protobuf(raw)
+            if parsed:
+                return {"kind": "protobuf", "heartbeat": False, "protobuf": parsed,
+                        "preview": f"[protobuf {parsed['field_count']} fields, {len(raw)} bytes]"}
         return {"kind": "binary", "heartbeat": False, "preview": f"[binary {len(text)} chars, base64]"}
     if text in ("2", "3", "ping", "pong"):
         return {"kind": "heartbeat", "heartbeat": True, "preview": text, "event": "ping" if text in ("2", "ping") else "pong"}

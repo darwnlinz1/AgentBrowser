@@ -237,3 +237,7 @@ agent_browser/stream_decode.py classifies WebSocket payloads (Socket.IO events, 
 ## 2026-10-16 cycle 42: WASM inspection
 
 agent_browser/wasm_inspect.py parses WASM section tables, function counts, imports and exports from raw bytecode; SourceInspector captures scriptLanguage/is_wasm, fetches bytecode via Debugger.getScriptSource, and streams disassembly via Debugger.disassembleWasmModule with a chunk cap (an uncapped loop bug was caught by tests). Live: an in-page compiled module appears as wasm://..., exports 'f', and disassembles to real WAT.
+
+## 2026-10-16 cycle 43: protobuf/gRPC-Web decoding
+
+agent_browser/protobuf_decode.py decodes the protobuf wire format without a schema (varints, fixed, length-delimited, heuristic nested messages) and splits gRPC-Web flag+length frames including trailers. Binary WebSocket frames now attempt a blackbox protobuf decode before falling back to an opaque label. Wire-level facts only -- field meanings require a schema and are not guessed.
