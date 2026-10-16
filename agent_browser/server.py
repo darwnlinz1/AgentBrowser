@@ -395,6 +395,7 @@ async def session_status():
         "smart_filter": (controller.network.smart_filter if (is_active and controller.network) else None),
         "dropped_events": (controller.cdp.dropped_events if (is_active and controller.cdp) else 0),
         "skipped_events": (getattr(controller.cdp, "skipped_events", 0) if (is_active and controller.cdp) else 0),
+        "lane_spilled": (getattr(controller.cdp, "lane_spilled", 0) if (is_active and controller.cdp) else 0),
     }
 
 

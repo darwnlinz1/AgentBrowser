@@ -141,6 +141,16 @@ class CDPConnection:
         self.skipped_events = 0
         self._sync_interest: Dict[Any, Any] = {}
         self._event_interest: Dict[Any, Any] = {}
+        # Cycle 52: per-session FIFO lanes. Async handlers for one session
+        # run sequentially in arrival order (a loadingFinished can no longer
+        # overtake its requestWillBeSent); lanes are independent, so one
+        # stalled session cannot block another. Overflow spills to the old
+        # capped task pool and is counted, never silent.
+        self._lane_maxsize = 1024
+        self._lanes: Dict[str, asyncio.Queue] = {}
+        self._lane_workers: Dict[str, asyncio.Task] = {}
+        self.lane_enqueued = 0
+        self.lane_spilled = 0
 
     def _fail_pending(self, generation: int, reason: str):
         """Fail only futures issued on this generation. Leave a newer generation alone."""
@@ -185,6 +195,7 @@ class CDPConnection:
         for task in list(self._handler_tasks):
             task.cancel()
         self._handler_tasks.clear()
+        self._close_lanes()
 
     @staticmethod
     def _resolve_interest(handler, methods):
@@ -216,6 +227,55 @@ class CDPConnection:
         if handler in self.sync_handlers:
             self.sync_handlers.remove(handler)
         self._sync_interest.pop(handler, None)
+
+    async def _lane_loop(self, key: str):
+        queue = self._lanes[key]
+        while True:
+            coro = await queue.get()
+            try:
+                await coro
+            except Exception:
+                pass
+            finally:
+                queue.task_done()
+
+    def _enqueue_lane(self, handler, data: Dict[str, Any], critical: bool = False):
+        """Run one async handler call inside its session's FIFO lane."""
+        try:
+            coro = handler(data)
+        except Exception:
+            return
+        if not asyncio.iscoroutine(coro):
+            return
+        key = data.get("sessionId") or ""
+        queue = self._lanes.get(key)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._lane_maxsize)
+            self._lanes[key] = queue
+            self._lane_workers[key] = asyncio.create_task(self._lane_loop(key))
+        try:
+            queue.put_nowait(coro)
+            self.lane_enqueued += 1
+        except asyncio.QueueFull:
+            # Counted spill: ordering is only guaranteed while the lane
+            # absorbs the flow; the overflow counter makes loss of that
+            # guarantee visible instead of silent.
+            self.lane_spilled += 1
+            self._schedule_handler(coro, critical=critical)
+
+    def _close_lanes(self):
+        for task in list(self._lane_workers.values()):
+            task.cancel()
+        self._lane_workers.clear()
+        for queue in list(self._lanes.values()):
+            while not queue.empty():
+                try:
+                    coro = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if asyncio.iscoroutine(coro):
+                    coro.close()
+        self._lanes.clear()
 
     def _schedule_handler(self, coro, critical: bool = False):
         # A Fetch.requestPaused handler must never be dropped: a dropped pause
@@ -353,12 +413,7 @@ class CDPConnection:
             critical = data.get("method") == "Fetch.requestPaused"
             for handler in list(event_interested if event_interested is not None
                                 else self.event_handlers):
-                try:
-                    res = handler(data)
-                    if asyncio.iscoroutine(res):
-                        self._schedule_handler(res, critical=critical)
-                except Exception:
-                    pass
+                self._enqueue_lane(handler, data, critical=critical)
 
 
 def normalize_navigation_url(url: str) -> str:

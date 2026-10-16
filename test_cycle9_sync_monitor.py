@@ -31,9 +31,12 @@ def test_monitor_ledger_excludes_long_lived():
 
 
 @pytest.mark.asyncio
-async def test_sync_handlers_survive_async_task_cap():
+async def test_sync_handlers_run_inline_before_async_lane():
+    # Cycle 52 superseded the async task-cap shed this test used to pin:
+    # async handlers now queue in per-session FIFO lanes instead of being
+    # shed at a task cap. The invariant that remains (and still matters):
+    # sync subscribers run inline in the listener, ahead of async work.
     conn = CDPConnection("ws://127.0.0.1:9/x")
-    conn._max_handler_tasks = 0  # every async handler would be shed
     seen = []
     conn.add_sync_handler(lambda data: seen.append(data.get("method")))
 
@@ -62,7 +65,7 @@ async def test_sync_handlers_survive_async_task_cap():
     task = asyncio.create_task(conn._listen_loop())
     await asyncio.sleep(0.1)
     task.cancel()
-    # Sync subscriber saw both events even with the async cap at zero.
-    assert seen == ["Network.requestWillBeSent", "Runtime.exceptionThrown"]
-    assert conn.dropped_events == 2
+    conn._close_lanes()
+    assert seen[:2] == ["Network.requestWillBeSent", "Runtime.exceptionThrown"]
+    assert conn.dropped_events == 0
     assert conn.sync_handler_errors == 0

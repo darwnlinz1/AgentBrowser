@@ -96,6 +96,11 @@ class PipeCDPClient:
         self.generation = 1
         self.dropped_events = 0
         self.skipped_events = 0
+        self.lane_enqueued = 0
+        self.lane_spilled = 0
+        self._lane_maxsize = 1024
+        self._lanes: dict = {}
+        self._lane_workers: dict = {}
         self.sync_handler_errors = 0
         self.on_drop = None
         self._sync_interest: dict = {}
@@ -183,6 +188,37 @@ class PipeCDPClient:
                     except Exception:
                         pass
 
+    async def _lane_loop(self, key: str) -> None:
+        queue = self._lanes[key]
+        while True:
+            coro = await queue.get()
+            try:
+                await coro
+            except Exception:
+                pass
+            finally:
+                queue.task_done()
+
+    def _lane_put(self, key: str, handler, obj: dict) -> None:
+        """Loop-thread: enqueue one handler call into its session FIFO lane."""
+        try:
+            coro = handler(obj)
+        except Exception:
+            return
+        if not asyncio.iscoroutine(coro):
+            return
+        queue = self._lanes.get(key)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._lane_maxsize)
+            self._lanes[key] = queue
+            self._lane_workers[key] = asyncio.ensure_future(self._lane_loop(key))
+        try:
+            queue.put_nowait(coro)
+            self.lane_enqueued += 1
+        except asyncio.QueueFull:
+            self.lane_spilled += 1
+            asyncio.ensure_future(coro)
+
     def _dispatch(self, obj: dict) -> None:
         mid = obj.get("id")
         if mid is not None and mid in self._pending:
@@ -197,13 +233,9 @@ class PipeCDPClient:
                 except Exception:
                     self.sync_handler_errors += 1
             if self._loop is not None:
+                key = obj.get("sessionId") or ""
                 for handler in self._interested(self._handlers, self._event_interest, obj["method"]):
-                    try:
-                        res = handler(obj)
-                        if asyncio.iscoroutine(res):
-                            asyncio.run_coroutine_threadsafe(res, self._loop)
-                    except Exception:
-                        pass
+                    self._loop.call_soon_threadsafe(self._lane_put, key, handler, obj)
 
     async def send(self, method: str, params: Optional[dict] = None,
                    session_id: Optional[str] = None, timeout: float = 15.0) -> dict:
