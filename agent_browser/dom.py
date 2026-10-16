@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from agent_browser.axtree import (
     build_ref_table,
+    delta_consistent,
     diff_refs,
     find_reanchor,
     join_layout,
@@ -172,12 +173,17 @@ class DOMEngine:
             root_ids = [n.get("nodeId") for n in nodes if n.get("parentId") is None]
             if root_ids:
                 root_hash = self._ax_hashes.get(root_ids[0])
+        diff = diff_refs(previous, refs) if previous else None
         return {
             "refs": refs,
             "count": len(refs),
             "merkle_root": root_hash,
             "node_hashes": {str(k): v for k, v in self._ax_hashes.items()},
-            "diff_from_previous": diff_refs(previous, refs) if previous else None,
+            "diff_from_previous": diff,
+            # Delta-vs-fresh invariant, checked on every snapshot: if the
+            # delta ever fails to reconstruct the fresh state, callers must
+            # distrust it and use the full keyframe instead.
+            "delta_consistent": delta_consistent(previous, diff, refs) if diff else None,
         }
 
     async def get_scoped_axtree(self, selector: Optional[str] = None,
@@ -215,12 +221,14 @@ class DOMEngine:
         self._scoped_refs[backend_id] = refs
         hashes = merkle_hashes(nodes)
         root_hash = hashes.get(nodes[0].get("nodeId")) if nodes else None
+        scoped_diff = diff_refs(previous, refs) if previous else None
         return {
             "backend_id": backend_id,
             "refs": refs,
             "count": len(refs),
             "merkle_root": root_hash,
-            "diff_from_previous": diff_refs(previous, refs) if previous else None,
+            "diff_from_previous": scoped_diff,
+            "delta_consistent": delta_consistent(previous, scoped_diff, refs) if scoped_diff else None,
         }
 
     async def format_axtree_view(self, include_text: bool = False, budget_tokens: int = 400, include_layout: bool = True) -> str:

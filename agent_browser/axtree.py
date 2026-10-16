@@ -250,6 +250,43 @@ def diff_refs(old_refs: List[Dict[str, Any]], new_refs: List[Dict[str, Any]]) ->
             "unchanged_count": len((new.keys() & old.keys())) - len(changed)}
 
 
+def refs_digest(refs: List[Dict[str, Any]]) -> str:
+    """
+    Canonical digest of ref-table state: (backend_id, fingerprint) pairs.
+
+    Ref numbers are presentation, not state, so they are excluded; two
+    captures with the same digest hold the same actionable content.
+    """
+    payload = sorted(
+        (str(r.get("backend_id")), r.get("fingerprint") or "") for r in refs or [])
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:20]
+
+
+def apply_ref_diff(old_refs: List[Dict[str, Any]], diff: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Reconstruct the new ref state from old refs + a ``diff_refs`` delta."""
+    by_id: Dict[Any, Dict[str, Any]] = {r["backend_id"]: dict(r) for r in old_refs or []}
+    for r in diff.get("removed") or []:
+        by_id.pop(r.get("backend_id"), None)
+    for change in diff.get("changed") or []:
+        after = change.get("after") or {}
+        if after.get("backend_id") is not None:
+            by_id[after["backend_id"]] = dict(after)
+    for r in diff.get("added") or []:
+        if r.get("backend_id") is not None:
+            by_id[r["backend_id"]] = dict(r)
+    return [by_id[k] for k in sorted(by_id, key=lambda k: str(k))]
+
+
+def delta_consistent(old_refs: List[Dict[str, Any]], diff: Dict[str, Any],
+                     new_refs: List[Dict[str, Any]]) -> bool:
+    """
+    Delta-vs-fresh invariant: applying the delta to the old refs must
+    reproduce exactly the fresh capture's digest. If this ever fails, the
+    diff is lying and callers must fall back to the full keyframe.
+    """
+    return refs_digest(apply_ref_diff(old_refs, diff)) == refs_digest(new_refs)
+
+
 def _ref_line(r: Dict[str, Any]) -> str:
     states = []
     if r.get("disabled"):
