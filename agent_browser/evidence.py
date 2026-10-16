@@ -606,6 +606,28 @@ def url_template(url: Optional[str], *, keep_query_values: bool = False) -> str:
     return f"{host}{path}{'?' + query if query else ''}"
 
 
+def url_path_template(url: Optional[str]) -> str:
+    """
+    The portable part of ``url_template``: path (+kept query keys) with no
+    host:port, so a signature survives ephemeral ports and staging hosts.
+    """
+    if not url:
+        return ""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return str(url)
+    if not parts.path and "://" not in str(url):
+        # Already a template like "host:port/path" -- strip the host segment.
+        s = str(url)
+        return s[s.index("/"):] if "/" in s else s
+    fake = "http://x" + (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    templ = url_template(fake)
+    return templ[1:] if templ.startswith("x") else templ
+
+
 _V8_MESSAGE_TEMPLATES = (
     ("Cannot read properties of % (reading '%')", "V8.NonObjectPropertyLoad"),
     ("Cannot set properties of % (setting '%')", "V8.NonObjectPropertyStore"),

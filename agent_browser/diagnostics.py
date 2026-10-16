@@ -236,7 +236,7 @@ if __name__ == "__main__":
         collapsed) and the first actionable failing request's path template +
         status. Background noise cannot satisfy this signature on its own.
         """
-        from agent_browser.evidence import normalize_exception_message, url_template
+        from agent_browser.evidence import normalize_exception_message, url_path_template, url_template
 
         exc = (exceptions or [{}])[0] if exceptions else {}
         desc = exc.get("description") or exc.get("text") or ""
@@ -246,7 +246,8 @@ if __name__ == "__main__":
         for r in requests or []:
             status = r.get("status")
             if status == "FAILED" or (isinstance(status, int) and status >= 400):
-                failing = {"path": url_template(r.get("url")), "status": status}
+                failing = {"path": url_template(r.get("url")), "status": status,
+                           "path_only": url_path_template(r.get("url"))}
                 break
         return {
             "exception_class": exc_class,

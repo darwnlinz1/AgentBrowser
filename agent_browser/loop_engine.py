@@ -26,20 +26,42 @@ def trace_signature(trace: Dict[str, Any]) -> Dict[str, Any]:
         runtime.get("exceptions") or [], network.get("requests") or [])
 
 
-def symptom_matches(trace: Dict[str, Any], signature: Dict[str, Any]) -> bool:
+SIGNATURE_STRENGTHS = ("strict", "portable")
+
+
+def symptom_matches(trace: Dict[str, Any], signature: Dict[str, Any],
+                    strength: str = "strict") -> bool:
     """
     True when a trace reproduces the signature: the failing request
     (path template + status) AND the exception class both appear.
     A signature with no failing request falls back to exception-only, and
     vice versa; an empty signature never matches.
+
+    Strengths: ``strict`` requires the exact templated host+path and the
+    exact status. ``portable`` survives environment drift: any failing
+    status (>=400/FAILED) on the same path template with host:port ignored
+    -- the exception class must still match, so background noise cannot
+    satisfy a portable signature either.
     """
+    if strength not in SIGNATURE_STRENGTHS:
+        raise ValueError(f"unknown signature strength {strength!r}; expected {SIGNATURE_STRENGTHS}")
     runtime = trace.get("runtime") or {}
     network = trace.get("network") or {}
     failing = signature.get("failing_request") or {}
     exc_class = signature.get("exception_class")
 
     fail_ok = True
-    if failing:
+    if failing and strength == "portable":
+        from agent_browser.evidence import url_path_template
+
+        want_path = failing.get("path_only") or url_path_template(failing.get("path"))
+        fail_ok = any(
+            (r.get("status") == "FAILED"
+             or (isinstance(r.get("status"), int) and r.get("status") >= 400))
+            and url_path_template(r.get("url")) == want_path
+            for r in network.get("requests") or []
+        )
+    elif failing:
         fail_ok = any(
             isinstance(r.get("status"), int)
             and r.get("status") == failing.get("status")
@@ -102,6 +124,7 @@ class DebugLoop:
         fix_hook: Optional[Callable[[Any], Awaitable[None]]] = None,
         clear_hook: Optional[Callable[[Any], Awaitable[None]]] = None,
         verify_runs: int = 3,
+        signature_strength: str = "strict",
         regression_runner: Optional[Callable[[str], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
         """
@@ -113,6 +136,9 @@ class DebugLoop:
         if action not in ALLOWED_ACTIONS:
             raise ValueError(
                 f"unsupported debug action {action!r}; expected one of {ALLOWED_ACTIONS}")
+        if signature_strength not in SIGNATURE_STRENGTHS:
+            raise ValueError(
+                f"unknown signature strength {signature_strength!r}; expected {SIGNATURE_STRENGTHS}")
         # Clamp reruns so API/MCP callers cannot turn one episode into an
         # unbounded trace loop against the daemon.
         verify_runs = min(MAX_VERIFY_RUNS, max(1, int(verify_runs)))
@@ -135,7 +161,7 @@ class DebugLoop:
         loop.advance("TRACE")
         trace_before = await self.ctrl.tracer.trace_action(action, target=target)
         signature = trace_signature(trace_before)
-        reproduced_before = symptom_matches(trace_before, signature)
+        reproduced_before = symptom_matches(trace_before, signature, signature_strength)
         causal_before = _causal_edge_present(trace_before)
         time_to_root_cause_ms = round((time.perf_counter() - started) * 1000, 1)
         loop.record("action reproduces the failure signature", reproduced_before,
@@ -170,7 +196,7 @@ class DebugLoop:
             if clear_hook is not None:
                 await clear_hook(self.ctrl)
 
-        symptom_after = [symptom_matches(t, signature) for t in after_traces]
+        symptom_after = [symptom_matches(t, signature, signature_strength) for t in after_traces]
         causal_after = any(_causal_edge_present(t) for t in after_traces)
         stable = [not s for s in symptom_after]
         final_exceptions = (after_traces[-1].get("runtime") or {}).get("exceptions") or [] if after_traces else []
@@ -210,6 +236,7 @@ class DebugLoop:
             "diagnostics_health": diagnostics.get("health"),
             "hypotheses": diagnostics.get("hypotheses"),
             "verify_runs": verify_runs,
+            "signature_strength": signature_strength,
             "regression_source": "external_runner" if regression_runner is not None else "trace_oracle",
             "symptom_after_runs": symptom_after,
             "ledger": loop.ledger,

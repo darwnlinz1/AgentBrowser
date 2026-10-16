@@ -289,3 +289,7 @@ PROJECT_EVALUATION.md gained a v3 audit section: every v2 'genuinely remaining' 
 ## 2026-10-16 cycle 55: AX delta-vs-fresh digest invariant (loop tick)
 
 Track 4's correctness invariant landed: axtree.refs_digest (canonical (backend_id, fingerprint) digest; ref numbering excluded as presentation), apply_ref_diff (reconstruct new state from old + delta), and delta_consistent. Both get_axtree_snapshot and get_scoped_axtree now check the invariant on every capture and report delta_consistent, so a lying delta is detectable at runtime and callers can fall back to the full keyframe. Property tests: each mutation kind (rename, state toggle, add, remove, no-op) reconstructs exactly, plus 60 seeded random mutation sequences. Gates: 187 Chrome-free passed; live suite 7/7.
+
+## 2026-10-16 cycle 56: portable vs strict signature strengths (loop tick)
+
+Track 10's last item: failure signatures now carry path_only (evidence.url_path_template: the url_template with host:port stripped) alongside the strict path, and loop_engine.symptom_matches takes a strength. strict (default, unchanged) requires exact templated host+path and exact status; portable accepts any failing status on the same path template across ports/hosts, but still requires the exception class, so background noise cannot satisfy it. DebugLoop.run_episode accepts signature_strength, validates it, and reports it -- a portable VERIFY pass is never silently presented as a strict one. Gates: 192 Chrome-free passed; live DebugLoop DONE/verified under strict.
