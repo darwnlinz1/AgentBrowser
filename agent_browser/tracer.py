@@ -140,10 +140,16 @@ class ActionTracer:
                 # The sync ledger is authoritative for in-flight state: it
                 # cannot have lost an event to the async handler cap.
                 snap = monitor.snapshot()
-                for rid in snap["in_flight"]:
+                # SPA route window: a route change since the last poll
+                # opens a fresh tracker epoch; previous-route stragglers
+                # stop blocking this route's settle.
+                while tracker.route_epoch < snap.get("route_epoch", 0):
+                    tracker.note_route_change()
+                current = snap.get("in_flight_current_route", snap["in_flight"])
+                for rid in current:
                     tracker.note_request_start(rid)
                 for rid in list(tracker.in_flight):
-                    if rid not in snap["in_flight"]:
+                    if rid not in current:
                         tracker.note_request_end(rid)
                 if snap["last_activity"] > tracker.last_activity:
                     tracker.last_activity = snap["last_activity"]

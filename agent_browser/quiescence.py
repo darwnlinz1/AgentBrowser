@@ -37,6 +37,11 @@ class QuiescenceTracker:
         self.quiet_window_s = quiet_window_s
         self.in_flight: Set[str] = set()
         self.long_lived: Set[str] = set()
+        # SPA route window: a route change opens a fresh epoch. Requests
+        # still in flight from the previous route move to stale_in_flight:
+        # reported, but they no longer block the new route's settle.
+        self.route_epoch: int = 0
+        self.stale_in_flight: Set[str] = set()
         # Quiet is measured from creation (the action), never from the epoch:
         # a fresh tracker must not read as "quiet for ages" on its first poll,
         # or a debounced/delayed effect would be missed (false-early settle).
@@ -65,8 +70,20 @@ class QuiescenceTracker:
     def note_request_end(self, request_id: str, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
         self.in_flight.discard(request_id)
+        self.stale_in_flight.discard(request_id)
         self.long_lived.discard(request_id)
         self.last_activity = now
+
+    def note_route_change(self, now: Optional[float] = None) -> None:
+        """Open a fresh route epoch (SPA navigation / main-frame nav)."""
+        now = time.monotonic() if now is None else now
+        self.route_epoch += 1
+        self.stale_in_flight |= self.in_flight
+        self.in_flight = set()
+        # The route change itself is activity: the new window must still
+        # observe a full quiet window after it.
+        self.last_activity = now
+        self.saw_activity = True
 
     def note_mutation(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
@@ -91,6 +108,8 @@ class QuiescenceTracker:
         now = time.monotonic() if now is None else now
         return {
             "in_flight": sorted(self.in_flight),
+            "stale_in_flight": sorted(self.stale_in_flight),
+            "route_epoch": self.route_epoch,
             "long_lived_ignored": sorted(self.long_lived),
             "quiet_for_ms": round(max(0.0, (now - self.last_activity)) * 1000, 1),
             "lifecycle": self.lifecycle,
@@ -112,6 +131,7 @@ class NetworkActivityMonitor:
     CDP_METHODS = frozenset({
         "Network.requestWillBeSent", "Network.loadingFinished",
         "Network.loadingFailed", "Runtime.exceptionThrown",
+        "Page.frameNavigated", "Page.navigatedWithinDocument",
     })
 
     def __init__(self):
@@ -120,11 +140,29 @@ class NetworkActivityMonitor:
         self.activity_seq: int = 0
         self.exceptions: int = 0
         self.last_activity: float = time.monotonic()
+        # SPA route windows: each main-frame / same-document navigation
+        # opens a new epoch; in-flight requests keep their start epoch so
+        # a settle window can count only the current route's requests.
+        self.route_epoch: int = 0
+        self._request_epoch: Dict[str, int] = {}
+
+    def _advance_route(self, now: float) -> None:
+        self.route_epoch += 1
+        self.activity_seq += 1
+        self.last_activity = now
 
     def on_event(self, data: Dict[str, Any]) -> None:
         method = data.get("method")
         params = data.get("params") or {}
         now = time.monotonic()
+        if method == "Page.navigatedWithinDocument":
+            self._advance_route(now)
+            return
+        if method == "Page.frameNavigated":
+            frame = params.get("frame") or {}
+            if not frame.get("parentId"):
+                self._advance_route(now)
+            return
         if method == "Network.requestWillBeSent":
             rid = params.get("requestId")
             if not rid:
@@ -134,6 +172,7 @@ class NetworkActivityMonitor:
                 self.long_lived.add(rid)
                 return
             self.in_flight.add(rid)
+            self._request_epoch[rid] = self.route_epoch
             self.activity_seq += 1
             self.last_activity = now
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
@@ -141,6 +180,7 @@ class NetworkActivityMonitor:
             was = rid in self.in_flight
             self.in_flight.discard(rid)
             self.long_lived.discard(rid)
+            self._request_epoch.pop(rid, None)
             if was:
                 self.activity_seq += 1
                 self.last_activity = now
@@ -155,9 +195,18 @@ class NetworkActivityMonitor:
         self.exceptions = 0
         self.last_activity = time.monotonic()
 
+    def in_flight_current_route(self) -> Set[str]:
+        """In-flight requests started in the current route epoch."""
+        return {rid for rid in self.in_flight
+                if self._request_epoch.get(rid, self.route_epoch) == self.route_epoch}
+
     def snapshot(self) -> Dict[str, Any]:
+        current = self.in_flight_current_route()
         return {
             "in_flight": sorted(self.in_flight),
+            "in_flight_current_route": sorted(current),
+            "in_flight_previous_routes": len(self.in_flight) - len(current),
+            "route_epoch": self.route_epoch,
             "long_lived": sorted(self.long_lived),
             "activity_seq": self.activity_seq,
             "exceptions": self.exceptions,
