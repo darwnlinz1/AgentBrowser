@@ -317,3 +317,7 @@ With Git credentials cached from the owner's earlier push, cycles 52-60 were pus
 ## 2026-10-16 cycle 62: CI on the PR (loop tick)
 
 The repo had zero automated checks, so .github/workflows/ci.yml now runs the curated Chrome-free battery (test_cycle*.py, test_phase*.py, corpus, benchmark, docs-coherence, evidence suites -- the same list the local gate uses) on pull_request and branch pushes, matrixed over ubuntu-latest and windows-latest with the [dev,fast,mcp] extras. Live-Chrome harnesses intentionally stay local (they need a real profile on the machine under test). Verified externally, not just locally: check runs for the pushed tip completed success on both OSes for both events. Gates: PR #1 CI green x4 runs.
+
+## 2026-10-16 cycle 63: real MCP stdio protocol test (loop tick)
+
+test_cycle63_mcp_stdio.py spawns the actual server subprocess and speaks MCP with the official client (initialize, tools/list, session_status call) -- the dispatcher unit tests alone could pass against a dead transport, as the SDK v2 rename proved earlier. It pins the tool catalog (>=20 tools incl. debug_episode, no eval/shutdown), the explicit-signature schema (debug_episode requires exactly url), and an honest empty session_status. Attribute access tolerates both SDK majors (inputSchema/isError vs input_schema/is_error). The CI glob picks the file up automatically on both OSes. Gates: local pass; CI verification follows the push.
