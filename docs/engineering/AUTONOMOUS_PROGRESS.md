@@ -225,3 +225,7 @@ Committed 116f347 'feat: HYPER-BROWSER engine' (100 files, safe group + tracked 
 ## 2026-10-16 cycle 39: stale AX ref revalidation
 
 AX refs are revalidated against Accessibility.getPartialAXTree before resolve/click: role/name identity changes mark the ref stale; a unique fresh ref with the same identity becomes the reanchor target (including remounted/gone nodes), while zero or multiple matches fail closed instead of clicking a guess. Live on Chrome: a replaced button was reanchored from backendNodeId 8 to 13 and the click still fired its fetch.
+
+## 2026-10-16 cycle 40: human handoff
+
+Controller handoff protocol: start_handoff pauses the agent (navigate/trace/evaluate/screenshot refused), shows an in-page 'human in control' banner, and complete_handoff resumes with a summary of the human actions captured meanwhile. Routes /handoff, /handoff/start, /handoff/complete + CLI handoff start|status|complete. Live: banner present, trace blocked during handoff, resume works.

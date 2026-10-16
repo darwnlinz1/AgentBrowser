@@ -245,6 +245,13 @@ def main():
     dp_p = subparsers.add_parser("dialog-policy", help="Set JavaScript dialog policy")
     dp_p.add_argument("policy", choices=["accept", "dismiss"])
     subparsers.add_parser("downloads", help="List downloads captured in this session")
+    ho_p = subparsers.add_parser("handoff", help="Human handoff: pause agent, hand browser to a human")
+    ho_sub = ho_p.add_subparsers(dest="handoff_cmd")
+    ho_start = ho_sub.add_parser("start", help="Start handoff (agent actions are refused until complete)")
+    ho_start.add_argument("reason", nargs="?", default="")
+    ho_sub.add_parser("status", help="Handoff status")
+    ho_done = ho_sub.add_parser("complete", help="Complete handoff and resume agent control")
+    ho_done.add_argument("summary", nargs="?", default="")
 
     # cookies
     ck_p = subparsers.add_parser("cookies", help="Inspect or set cookies")
@@ -537,6 +544,15 @@ def main():
 
     elif args.command == "downloads":
         res = make_request("GET", "/downloads", server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "handoff":
+        if args.handoff_cmd == "start":
+            res = make_request("POST", "/handoff/start", {"reason": args.reason}, server_url=args.server)
+        elif args.handoff_cmd == "complete":
+            res = make_request("POST", "/handoff/complete", {"summary": args.summary}, server_url=args.server)
+        else:
+            res = make_request("GET", "/handoff", server_url=args.server)
         print(json.dumps(res, indent=2))
 
     elif args.command == "cookies":

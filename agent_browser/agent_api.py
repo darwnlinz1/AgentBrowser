@@ -1,6 +1,7 @@
 import os
 import base64
 import asyncio
+import time
 from typing import Dict, Any, List, Optional
 
 from agent_browser.cdp import BrowserProcessManager, CDPConnection, wait_for_navigation
@@ -76,6 +77,13 @@ class AgentBrowserController:
         self.dialog_policy = os.environ.get("AGENTBROWSER_DIALOG_POLICY", "dismiss").strip().lower()
         self.dialog_log: List[Dict[str, Any]] = []
         self.downloads: List[Dict[str, Any]] = []
+        # Human handoff: while awaiting_human, agent-driven actions are
+        # refused (a human has the browser); observation of status remains.
+        self.awaiting_human = False
+        self.handoff_log: List[Dict[str, Any]] = []
+        self._handoff_started_at: Optional[float] = None
+        self._handoff_action_baseline = 0
+        self._handoff_reason = ""
         self._running = False
         self._reconnecting = False
 
@@ -409,7 +417,73 @@ class AgentBrowserController:
         if self.source_inspector:
             await self.source_inspector.handle_cdp_event(data)
 
+    def _require_agent_control(self, operation: str) -> None:
+        if self.awaiting_human:
+            raise RuntimeError(f"{operation} refused: awaiting human handoff (complete the handoff first)")
+
+    def handoff_status(self) -> Dict[str, Any]:
+        return {
+            "awaiting_human": self.awaiting_human,
+            "reason": self._handoff_reason,
+            "started_at": self._handoff_started_at,
+            "log": self.handoff_log[-10:],
+        }
+
+    async def _handoff_banner(self, show: bool, reason: str = "") -> None:
+        if not self.runtime:
+            return
+        if show:
+            expr = (
+                "(() => { let b = document.getElementById('__agent_handoff_banner');"
+                " if (!b) { b = document.createElement('div'); b.id = '__agent_handoff_banner';"
+                " b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;"
+                "background:#7c2d12;color:#fff;padding:8px 12px;font:14px sans-serif;text-align:center';"
+                " document.documentElement.appendChild(b); }"
+                f" b.textContent = 'Agent paused -- human in control. {reason}'; return true; }})()"
+            )
+        else:
+            expr = "(() => { const b = document.getElementById('__agent_handoff_banner'); if (b) b.remove(); return true; })()"
+        try:
+            await self.runtime.evaluate(expr)
+        except Exception:
+            pass
+
+    async def start_handoff(self, reason: str = "", instructions: str = "") -> Dict[str, Any]:
+        """Pause the agent and hand the browser to a human."""
+        if self.awaiting_human:
+            return self.handoff_status()
+        self.awaiting_human = True
+        self._handoff_started_at = time.time()
+        self._handoff_reason = reason or ""
+        self._handoff_action_baseline = len(self.user_tracker.action_history) if self.user_tracker else 0
+        self.handoff_log.append({
+            "event": "handoff_started", "reason": reason, "instructions": instructions,
+            "timestamp": self._handoff_started_at,
+        })
+        await self._handoff_banner(True, reason)
+        return self.handoff_status()
+
+    async def complete_handoff(self, summary: str = "") -> Dict[str, Any]:
+        """Resume agent control; summarize what the human did meanwhile."""
+        if not self.awaiting_human:
+            return self.handoff_status()
+        actions: List[Dict[str, Any]] = []
+        if self.user_tracker:
+            history = self.user_tracker.get_actions(limit=100000)
+            actions = history[self._handoff_action_baseline:] if len(history) >= self._handoff_action_baseline else history
+        entry = {
+            "event": "handoff_complete", "summary": summary,
+            "human_actions_count": len(actions), "human_actions": actions[-50:],
+            "timestamp": time.time(),
+        }
+        self.handoff_log.append(entry)
+        self.awaiting_human = False
+        self._handoff_reason = ""
+        await self._handoff_banner(False)
+        return {**self.handoff_status(), "completion": entry}
+
     async def navigate(self, url: str) -> Dict[str, Any]:
+        self._require_agent_control("navigate")
         sid = self.active_session_id
         result = await wait_for_navigation(self.cdp, sid, url)
         if result.get("navigated") and self.source_inspector:
@@ -441,12 +515,16 @@ class AgentBrowserController:
         return await self.dom.get_interactive_snapshot()
 
     async def trace_action(self, action_type: str, target: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._require_agent_control("trace_action")
         return await self.tracer.trace_action(action_type, target=target, params=params)
 
     async def evaluate(self, expression: str) -> Dict[str, Any]:
+        self._require_agent_control("evaluate")
         return await self.runtime.evaluate(expression)
 
     async def take_screenshot(self, output_path: str = "screenshot.png", full_page: bool = False) -> str:
+        # No screenshots while a human is in control (privacy).
+        self._require_agent_control("screenshot")
         sid = self.active_session_id
         params = {"format": "png"}
         if full_page:

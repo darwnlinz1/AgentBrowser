@@ -332,6 +332,33 @@ async def list_downloads():
     return {"downloads": ctrl.downloads}
 
 
+class HandoffStartModel(BaseModel):
+    reason: Optional[str] = None
+    instructions: Optional[str] = None
+
+
+class HandoffCompleteModel(BaseModel):
+    summary: Optional[str] = None
+
+
+@app.get("/handoff")
+async def handoff_status():
+    ctrl = require_controller()
+    return ctrl.handoff_status()
+
+
+@app.post("/handoff/start")
+async def handoff_start(m: HandoffStartModel):
+    ctrl = require_controller()
+    return await ctrl.start_handoff(reason=m.reason or "", instructions=m.instructions or "")
+
+
+@app.post("/handoff/complete")
+async def handoff_complete(m: HandoffCompleteModel):
+    ctrl = require_controller()
+    return await ctrl.complete_handoff(summary=m.summary or "")
+
+
 @app.post("/shutdown")
 async def shutdown_daemon():
     """Stop the browser this daemon owns, then exit the daemon process."""

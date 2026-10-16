@@ -58,6 +58,7 @@ All commands can be executed directly via terminal using:
 | `perf` | `python -m agent_browser perf` | Web-vitals snapshot (LCP/CLS/long-tasks, graded) + renderer metrics |
 | `dialogs` / `dialog-policy` | `python -m agent_browser dialogs` / `dialog-policy accept|dismiss` | JavaScript dialog log + handling policy (default dismiss) |
 | `downloads` | `python -m agent_browser downloads` | Downloads captured in this session (confined directory) |
+| `handoff` | `python -m agent_browser handoff start "reason"` / `handoff complete "summary"` | Human takeover: agent actions refused until completed |
 | `stop` | `python -m agent_browser stop` | Gracefully closes browser session and background daemon |
 
 **Platform notes (current implementation):**
