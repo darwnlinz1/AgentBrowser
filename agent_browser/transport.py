@@ -178,6 +178,7 @@ class PipeCDPClient:
         finally:
             self.closed = True
             if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._close_lanes)
                 for fut in list(self._pending.values()):
                     if not fut.done():
                         self._loop.call_soon_threadsafe(fut.set_exception, ConnectionError("pipe closed"))
@@ -198,6 +199,22 @@ class PipeCDPClient:
                 pass
             finally:
                 queue.task_done()
+
+    def _close_lanes(self) -> None:
+        """Loop-thread: cancel lane workers and drop queued handler calls."""
+        for task in list(self._lane_workers.values()):
+            task.cancel()
+        self._lane_workers.clear()
+        for queue in list(self._lanes.values()):
+            while not queue.empty():
+                try:
+                    coro = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if asyncio.iscoroutine(coro):
+                    coro.close()
+                    self.dropped_events += 1
+        self._lanes.clear()
 
     def _lane_put(self, key: str, handler, obj: dict) -> None:
         """Loop-thread: enqueue one handler call into its session FIFO lane."""
@@ -261,6 +278,7 @@ class PipeCDPClient:
 
     async def disconnect(self) -> None:
         self.closed = True
+        self._close_lanes()
         try:
             os.close(self._w)
         except Exception:

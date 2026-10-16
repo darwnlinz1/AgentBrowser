@@ -297,3 +297,7 @@ Track 10's last item: failure signatures now carry path_only (evidence.url_path_
 ## 2026-10-16 cycle 57: SPA route windows (loop tick)
 
 Track 8's route-window item: NetworkActivityMonitor now tags every in-flight request with a route epoch, advanced by Page.navigatedWithinDocument and main-frame Page.frameNavigated (iframe navigations do not open a window), and reports in_flight_current_route / in_flight_previous_routes. QuiescenceTracker.note_route_change opens a fresh epoch: previous-route stragglers move to stale_in_flight (reported, no longer blocking), while the route change itself counts as activity so the new window still needs a full quiet window. The tracer poll syncs epochs from the monitor snapshot, so an action that triggers an SPA navigation settles against the new route only. Gates: 195 Chrome-free passed; live corpus 10/10 dropped=0 settle=quiescent.
+
+## 2026-10-16 cycle 58: lane lifecycle on socket drop (loop tick)
+
+Review of the cycle-52 lanes found a lifecycle hole: lanes were only closed in disconnect(), so on an unexpected socket drop the queued handler calls and lane workers survived -- stale events could execute against a later reconnected session. CDPConnection now closes lanes in the ConnectionClosed path too, PipeCDPClient closes them on disconnect and on reader-thread exit, and queued coroutines discarded at close are counted in dropped_events (never silent). Tests pin it: with a parked first handler, r2/r3 queued behind it never run after the drop and dropped_events == 2. Gates: 197 Chrome-free passed.

@@ -275,6 +275,11 @@ class CDPConnection:
                     break
                 if asyncio.iscoroutine(coro):
                     coro.close()
+                    # Counted, never silent: these handler calls die with
+                    # the socket that carried their events.
+                    self.dropped_events += 1
+                    if self.event_buffer is not None:
+                        self.event_buffer.dropped += 1
         self._lanes.clear()
 
     def _schedule_handler(self, coro, critical: bool = False):
@@ -379,6 +384,9 @@ class CDPConnection:
             except _CONNECTION_CLOSED:
                 self.running = False
                 self._fail_pending(generation, "CDP socket closed")
+                # Lanes belong to the dead socket: queued handler calls
+                # must not execute against a future reconnected session.
+                self._close_lanes()
                 cb = self.on_drop
                 if cb:
                     try:
