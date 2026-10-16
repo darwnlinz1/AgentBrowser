@@ -325,3 +325,7 @@ test_cycle63_mcp_stdio.py spawns the actual server subprocess and speaks MCP wit
 ## 2026-10-16 cycle 64: live corpus in CI (loop tick)
 
 ci.yml gained a live-corpus job on ubuntu-latest: it runs fixtures/run_live_corpus.py (attribution precision/recall, false-background, dropped events against the runner's real headless Chrome) and python test_suite.py, so the PR is now gated on browser-truth metrics, not only Chrome-free suites. The heavier live harnesses (daemon smoke, interventional, journal minimize, debug loop) stay local. Verified via check runs at the pushed tip: live-corpus success on both the push and pull_request events, alongside chrome-free success on ubuntu+windows.
+
+## 2026-10-16 cycle 65: full live battery in CI (loop tick)
+
+The live-corpus job now runs the entire live battery -- fault corpus, integration suite, daemon smoke (subprocess daemon + token CLI on Linux), interventional promotion, journal minimization, and the DebugLoop episode. All harnesses return truthful exit codes (verified in source: 0 only on PASS/promoted/verified), so a red step is a real failure. Check runs at the pushed tip: live-corpus success on both events, chrome-free success on ubuntu+windows. The PR gate is now equivalent to the local cycle-60 battery plus the two-OS unit matrix.
