@@ -1,6 +1,8 @@
 import json
 from typing import Dict, Any, List, Optional
 
+from agent_browser.evidence import cookie_url_for_domain
+
 
 class StorageEngine:
     """
@@ -40,8 +42,9 @@ class StorageEngine:
         if url:
             params["url"] = url
         elif domain:
-            if domain in ("127.0.0.1", "localhost") or domain.replace(".", "").isdigit():
-                params["url"] = f"http://{domain}:{path}" if ":" in domain else f"http://{domain}{path}"
+            host = domain.split(":")[0]
+            if host in ("127.0.0.1", "localhost") or host.replace(".", "").isdigit():
+                params["url"] = cookie_url_for_domain(domain, path)
             else:
                 params["domain"] = domain
 

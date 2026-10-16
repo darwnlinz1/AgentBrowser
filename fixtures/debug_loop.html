@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AgentBrowser debug loop</title>
+</head>
+<body>
+  <h1>Shared debug loop</h1>
+  <button id="fetch-btn" type="button">Fetch status</button>
+  <p id="result">idle</p>
+  <script src="encrypt.js"></script>
+  <script>
+    document.getElementById("fetch-btn").addEventListener("click", async () => {
+      const res = await fetch("/api/failing-endpoint");
+      const data = await res.json();
+      document.getElementById("result").textContent = data.id;
+    });
+    // Known plaintext is encrypted, then posted. The hook must see it first.
+    const plaintext = "PLAINTEXT-KNOWN-9f3a";
+    const body = window.encryptPayload(plaintext);
+    fetch("/api/encrypted", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer fixture-secret-token",
+        "Cookie": "session=fixture-secret-cookie"
+      },
+      body: body
+    });
+  </script>
+</body>
+</html>

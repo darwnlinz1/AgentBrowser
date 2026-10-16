@@ -1,10 +1,16 @@
 import json
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent_browser.axtree import build_ref_table, diff_refs, merkle_hashes, render_budgeted_view, render_view
+from agent_browser.fingerprints import ElementFingerprint, resolve_fingerprint
+
 INTERACTIVE_SNAPSHOT_JS = r"""
 (() => {
     let index = 1;
     const elements = [];
+    // Clear refs from a previous snapshot first: a stale data-agent-ref on a
+    // now-hidden element could otherwise make '#N' resolve to the wrong node.
+    document.querySelectorAll('[data-agent-ref]').forEach(e => e.removeAttribute('data-agent-ref'));
     const walk = (node, framePath = "") => {
         if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
 
@@ -27,7 +33,10 @@ INTERACTIVE_SNAPSHOT_JS = r"""
 
         if (isVisible && (isInteractive || ['h1','h2','h3','h4','p','span','div','li','table'].includes(tag))) {
             const text = (node.innerText || node.textContent || '').trim().replace(/\s+/g, ' ');
-            const value = node.value !== undefined ? String(node.value) : undefined;
+            const __rawType = (node.getAttribute('type') || '').toLowerCase();
+            const __nameHint = (node.getAttribute('name') || '') + ' ' + (node.getAttribute('autocomplete') || '') + ' ' + (node.id || '');
+            const __sensitive = __rawType === 'password' || /(otp|one[-_]?time|cvv|cvc|cc[-_]?number|card[-_]?number|security[-_]?code)/i.test(__nameHint);
+            const value = node.value !== undefined ? (__sensitive ? '[redacted]' : String(node.value)) : undefined;
             const role = node.getAttribute('role') || tag;
             const ariaLabel = node.getAttribute('aria-label');
             const id = node.id || undefined;
@@ -88,6 +97,7 @@ INTERACTIVE_SNAPSHOT_JS = r"""
         elements: elements
     };
 })()
+//# sourceURL=__agent_internal_scanner__.js
 """
 
 class DOMEngine:
@@ -99,6 +109,111 @@ class DOMEngine:
     def __init__(self, cdp_conn, active_session_id_getter):
         self.cdp = cdp_conn
         self.get_session_id = active_session_id_getter
+        self._ax_refs: List[Dict[str, Any]] = []
+        self._ax_hashes: Dict[Any, str] = {}
+        # Self-healing: last known fingerprint per selector + heal audit log.
+        self._fingerprints: Dict[str, ElementFingerprint] = {}
+        self.heal_log: List[Dict[str, Any]] = []
+        # Which snapshot minted the refs the agent last saw ('ax' | 'legacy').
+        # Numeric #ref clicks route to the table that issued them.
+        self._last_view_source: Optional[str] = None
+
+    async def get_axtree_snapshot(self, include_text: bool = False) -> Dict[str, Any]:
+        """
+        Node-identity snapshot from the Chromium accessibility tree.
+
+        Refs bind to ``backendDOMNodeId`` in a Python-side table; nothing is
+        written into the page DOM. Includes a Merkle root over the AX tree so
+        callers can detect *whether* anything changed with one hash compare,
+        and ``diff_refs`` can then return only the changed subtree.
+        """
+        sid = self.get_session_id()
+        try:
+            await self.cdp.send("Accessibility.enable", {}, session_id=sid)
+        except Exception:
+            pass
+        res = await self.cdp.send("Accessibility.getFullAXTree", {}, session_id=sid)
+        self._last_view_source = "ax"
+        nodes = res.get("nodes") or []
+        previous = self._ax_refs
+        refs = build_ref_table(nodes, include_text=include_text)
+        self._ax_refs = refs
+        self._ax_hashes = merkle_hashes(nodes)
+        root_hash = None
+        if nodes:
+            root_ids = [n.get("nodeId") for n in nodes if n.get("parentId") is None]
+            if root_ids:
+                root_hash = self._ax_hashes.get(root_ids[0])
+        return {
+            "refs": refs,
+            "count": len(refs),
+            "merkle_root": root_hash,
+            "node_hashes": {str(k): v for k, v in self._ax_hashes.items()},
+            "diff_from_previous": diff_refs(previous, refs) if previous else None,
+        }
+
+    async def format_axtree_view(self, include_text: bool = False, budget_tokens: int = 400) -> str:
+        snap = await self.get_axtree_snapshot(include_text=include_text)
+        # Title/URL via a cheap evaluate; failure is non-fatal.
+        title = url = ""
+        try:
+            sid = self.get_session_id()
+            res = await self.cdp.send("Runtime.evaluate", {
+                "expression": "({t: document.title, u: location.href})", "returnByValue": True,
+            }, session_id=sid, timeout=3.0)
+            val = (res.get("result") or {}).get("value") or {}
+            title, url = val.get("t", ""), val.get("u", "")
+        except Exception:
+            pass
+        return render_budgeted_view(snap["refs"], title=title, url=url, budget_tokens=budget_tokens)
+
+    async def resolve_ax_ref(self, ref: int) -> Optional[Dict[str, Any]]:
+        """Resolve a [#ref] from the last AX snapshot to its live node info."""
+        entry = next((r for r in self._ax_refs if r.get("ref") == ref), None)
+        if not entry:
+            return None
+        sid = self.get_session_id()
+        try:
+            resolved = await self.cdp.send(
+                "DOM.resolveNode", {"backendNodeId": entry["backend_id"]}, session_id=sid
+            )
+            object_id = ((resolved.get("object") or {}).get("objectId"))
+            if not object_id:
+                return {**entry, "resolved": False}
+            described = await self.cdp.send("Runtime.callFunctionOn", {
+                "objectId": object_id,
+                "functionDeclaration": "function(){ const r=this.getBoundingClientRect(); return {tag:this.tagName.toLowerCase(), text:(this.innerText||this.textContent||'').trim().slice(0,120), rect:{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}}; }",
+                "returnByValue": True,
+            }, session_id=sid)
+            info = (((described.get("result") or {}).get("value")) or {})
+            return {**entry, "resolved": True, **info}
+        except Exception as exc:
+            return {**entry, "resolved": False, "error": str(exc)}
+
+    async def resolve_healed_ref(self, selector: str) -> Optional[Dict[str, Any]]:
+        """
+        Re-locate an element whose selector broke, by fingerprint similarity
+        over a fresh snapshot. Returns {ref, confidence, evidence} or None
+        (fail closed: never click a below-threshold guess). Every outcome is
+        appended to ``heal_log`` as evidence.
+        """
+        stored = self._fingerprints.get(selector)
+        if stored is None:
+            return None
+        snap = await self.get_interactive_snapshot()
+        elements = snap.get("elements") or []
+        candidates = [ElementFingerprint.from_snapshot_element(el) for el in elements]
+        result = resolve_fingerprint(stored, candidates)
+        self.heal_log.append({"selector": selector, **result["evidence"]})
+        if not result["healed"]:
+            return None
+        match = result["match"]
+        idx = candidates.index(match)
+        return {
+            "ref": elements[idx].get("ref"),
+            "confidence": result["confidence"],
+            "evidence": result["evidence"],
+        }
 
     async def get_interactive_snapshot(self) -> Dict[str, Any]:
         """
@@ -115,6 +230,7 @@ class DOMEngine:
             },
             session_id=sid
         )
+        self._last_view_source = "legacy"
         return res.get("result", {}).get("value", {})
 
     async def format_agent_view(self) -> str:
@@ -197,77 +313,194 @@ class DOMEngine:
             {"expression": expr, "returnByValue": True},
             session_id=sid
         )
-        return res.get("result", {}).get("value")
+        value = res.get("result", {}).get("value")
+        if value and not (selector.startswith("#") and selector[1:].isdigit()):
+            # Remember what this selector pointed at, so a later break can heal.
+            try:
+                self._fingerprints[selector] = ElementFingerprint.from_snapshot_element(value)
+            except Exception:
+                pass
+        return value
 
-    async def click(self, selector: str) -> Dict[str, Any]:
+    async def click_ax_ref(self, ref: int) -> Dict[str, Any]:
+        """Click an accessibility-tree ref by node identity (no page writes)."""
+        entry = next((r for r in self._ax_refs if r.get("ref") == ref), None)
+        if not entry:
+            raise ValueError(f"AX ref #{ref} not in the last accessibility snapshot.")
+        sid = self.get_session_id()
+        resolved = await self.cdp.send(
+            "DOM.resolveNode", {"backendNodeId": entry["backend_id"]}, session_id=sid)
+        object_id = ((resolved.get("object") or {}).get("objectId"))
+        if not object_id:
+            raise ValueError(f"AX ref #{ref} could not be resolved to a live node.")
+        res = await self.cdp.send("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "functionDeclaration": (
+                "function(){ this.scrollIntoView({block:'center', inline:'center'});"
+                " const r = this.getBoundingClientRect();"
+                " const cx = r.left + r.width/2, cy = r.top + r.height/2;"
+                " const hit = document.elementFromPoint(cx, cy) || this;"
+                " const t = this.contains(hit) ? hit : this;"
+                " const init = {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, button:0};"
+                " t.dispatchEvent(new PointerEvent('pointerdown', init));"
+                " t.dispatchEvent(new MouseEvent('mousedown', init));"
+                " t.dispatchEvent(new PointerEvent('pointerup', init));"
+                " t.dispatchEvent(new MouseEvent('mouseup', init));"
+                " t.dispatchEvent(new MouseEvent('click', init));"
+                " return {clicked:true, x:cx, y:cy, tag:this.tagName.toLowerCase(),"
+                " text:(this.innerText||this.textContent||'').trim().slice(0,80)}; }"
+            ),
+            "returnByValue": True,
+        }, session_id=sid)
+        value = ((res.get("result") or {}).get("value") or {})
+        if not value.get("clicked"):
+            raise ValueError(f"AX ref #{ref} could not be clicked.")
+        return {
+            "clicked": True,
+            "selector": f"#{ref}",
+            "via": "axtree",
+            "coordinates": {"x": value.get("x"), "y": value.get("y")},
+            "element": {"tag": value.get("tag"), "id": entry.get("name"), "text": value.get("text")},
+        }
+
+    async def click(self, selector: str, action_tag: Optional[str] = None) -> Dict[str, Any]:
         """
-        Clicks an element using its center coordinates or synthetic fallback.
+        Click the element so its listeners actually run.
+
+        Input.dispatchMouseEvent is not used here. Coordinate input misses the
+        target when the CSS viewport and the CDP input surface disagree. The
+        click is a MouseEvent at the element's center, which fires the same
+        listeners a user click does and records those coordinates.
         """
         sid = self.get_session_id()
+        # Numeric refs route to the snapshot that minted them: AX refs by
+        # node identity when the last view was the accessibility tree.
+        if selector.startswith("#") and selector[1:].isdigit() and self._last_view_source == "ax":
+            try:
+                return await self.click_ax_ref(int(selector[1:]))
+            except Exception:
+                pass  # fall through to the legacy path below
         el = await self.query_selector(selector)
         if not el or not el.get("rect"):
+            # Last resort: an AX ref from an earlier accessibility view.
+            if selector.startswith("#") and selector[1:].isdigit() and self._ax_refs:
+                return await self.click_ax_ref(int(selector[1:]))
             raise ValueError(f"Element '{selector}' not found or not rendered.")
 
         rect = el["rect"]
         cx = rect["x"] + rect["width"] / 2
         cy = rect["y"] + rect["height"] / 2
+        expr = f"""
+        (() => {{
+            let sel = {json.dumps(selector)};
+            let el = null;
+            if (sel.startsWith("#") && !isNaN(sel.slice(1))) {{
+                el = document.querySelector(`[data-agent-ref='${{sel.slice(1)}}']`);
+            }}
+            if (!el) el = document.querySelector(sel);
+            if (!el) return {{ clicked: false, reason: "not_found" }};
+            el.scrollIntoView({{block: "center", inline: "center"}});
+            const rect = el.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const hit = document.elementFromPoint(cx, cy) || el;
+            const target = el.contains(hit) ? hit : el;
+            const init = {{
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX: cx,
+                clientY: cy,
+                button: 0
+            }};
+            // MouseEvent carries the center coordinates. HTMLElement.click()
+            // does not, so the user tracker would record 0,0.
+            target.dispatchEvent(new PointerEvent("pointerdown", init));
+            target.dispatchEvent(new MouseEvent("mousedown", init));
+            target.dispatchEvent(new PointerEvent("pointerup", init));
+            target.dispatchEvent(new MouseEvent("mouseup", init));
+            target.dispatchEvent(new MouseEvent("click", init));
+            return {{
+                clicked: true,
+                x: cx,
+                y: cy,
+                tag: el.tagName.toLowerCase(),
+                id: el.id || "",
+                text: (el.innerText || el.textContent || "").trim().slice(0, 80)
+            }};
+        }})()
+        """
+        if action_tag:
+            # Stamp the dispatch script so any request/exception whose async
+            # initiator chain contains this sourceURL is provably caused by it.
+            expr = expr + f"\n//# sourceURL={action_tag}.js"
+        res = await self.cdp.send(
+            "Runtime.evaluate",
+            {"expression": expr, "returnByValue": True, "userGesture": True},
+            session_id=sid,
+        )
+        value = (res.get("result") or {}).get("value") or {}
+        if not value.get("clicked"):
+            raise ValueError(f"Element '{selector}' could not be clicked: {value.get('reason')}")
+        return {
+            "clicked": True,
+            "selector": selector,
+            "coordinates": {"x": value.get("x", cx), "y": value.get("y", cy)},
+            "element": {"tag": value.get("tag"), "id": value.get("id"), "text": value.get("text")},
+        }
 
-        # CDP Input.dispatchMouseEvent at center coordinate
-        await self.cdp.send("Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": cx,
-            "y": cy
-        }, session_id=sid)
-        await self.cdp.send("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": cx,
-            "y": cy,
-            "button": "left",
-            "clickCount": 1
-        }, session_id=sid)
-        await self.cdp.send("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": cx,
-            "y": cy,
-            "button": "left",
-            "clickCount": 1
-        }, session_id=sid)
-
-        return {"clicked": True, "selector": selector, "coordinates": {"x": cx, "y": cy}}
-
-    async def type_text(self, selector: str, text: str, clear_first: bool = True) -> Dict[str, Any]:
+    async def type_text(self, selector: str, text: str, clear_first: bool = True, action_tag: Optional[str] = None) -> Dict[str, Any]:
         """
         Types text into the target element with option to clear previous value.
+
+        Focus is moved explicitly first: synthetic mouse events are untrusted
+        and do not move focus, so keystrokes could otherwise land in whatever
+        element happened to be focused. Text is inserted with the trusted
+        ``Input.insertText`` path, which fires the same input events a real
+        keyboard produces (including on React-controlled inputs).
         """
         sid = self.get_session_id()
-        await self.click(selector)
+        await self.click(selector, action_tag=action_tag)
 
-        if clear_first:
-            expr_clear = f"""
-            (() => {{
-                let sel = {json.dumps(selector)};
-                let el = sel.startsWith("#") && !isNaN(sel.slice(1)) ?
-                         document.querySelector(`[data-agent-ref='${{sel.slice(1)}}']`) :
-                         document.querySelector(sel);
-                if (el) {{
-                    el.value = '';
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-            }})()
-            """
-            await self.cdp.send("Runtime.evaluate", {"expression": expr_clear}, session_id=sid)
+        # Explicit focus + optional clear via the native value setter so
+        # framework-controlled (React) inputs register the change.
+        # When an action_tag is present, insertion is attempted inside this
+        # stamped script via execCommand: the input handler (and any timer or
+        # fetch it schedules) then carries the action's sourceURL in its async
+        # initiator chain, so downstream effects are *attributed*, not merely
+        # temporal. Trusted Input.insertText remains the fallback.
+        expr_focus = f"""
+        (() => {{
+            let sel = {json.dumps(selector)};
+            let el = sel.startsWith("#") && !isNaN(sel.slice(1)) ?
+                     document.querySelector(`[data-agent-ref='${{sel.slice(1)}}']`) :
+                     document.querySelector(sel);
+            if (!el) return {{ focused: false, inserted: false }};
+            el.focus();
+            if ({json.dumps(bool(clear_first))}) {{
+                const proto = el.constructor && el.constructor.prototype;
+                const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(el, ''); else el.value = '';
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            }}
+            let inserted = false;
+            const text = {json.dumps(text)};
+            if (text) {{
+                try {{ inserted = document.execCommand('insertText', false, text); }} catch (e) {{ inserted = false; }}
+            }}
+            return {{ focused: document.activeElement === el, inserted: !!inserted }};
+        }})()
+        """
+        if action_tag:
+            expr_focus = expr_focus + f"\n//# sourceURL={action_tag}.js"
+        focus_res = await self.cdp.send("Runtime.evaluate", {"expression": expr_focus, "returnByValue": True}, session_id=sid)
+        focus_val = ((focus_res.get("result") or {}).get("value") or {})
 
-        for ch in text:
-            await self.cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyDown",
-                "text": ch
-            }, session_id=sid)
-            await self.cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyUp"
-            }, session_id=sid)
+        if text and not focus_val.get("inserted"):
+            await self.cdp.send("Input.insertText", {"text": text}, session_id=sid)
 
-        return {"typed": text, "selector": selector}
+        return {"typed": text, "selector": selector, "focused": bool(focus_val.get("focused", True)),
+                "inserted_via": "stamped_eval" if focus_val.get("inserted") else "input_insertText"}
 
     async def mutate_element(self, selector: str, action: str, **kwargs) -> Dict[str, Any]:
         """
@@ -319,23 +552,58 @@ class DOMEngine:
         res = await self.cdp.send("Runtime.evaluate", {"expression": expr, "returnByValue": True}, session_id=sid)
         return res.get("result", {}).get("value", {})
 
+    async def get_page_html(self) -> str:
+        """
+        Retrieves complete HTML source of the active document including DOCTYPE.
+        """
+        sid = self.get_session_id()
+        expr = """
+        (() => {
+            const dt = document.doctype;
+            const doctypeStr = dt ? `<!DOCTYPE ${dt.name}${dt.publicId ? ` PUBLIC "${dt.publicId}"` : ''}${(!dt.publicId && dt.systemId) ? ' SYSTEM' : ''}${dt.systemId ? ` "${dt.systemId}"` : ''}>\n` : '';
+            return doctypeStr + (document.documentElement ? document.documentElement.outerHTML : '');
+        })()
+        //# sourceURL=__agent_internal_doctype__.js
+        """
+        try:
+            res = await self.cdp.send("Runtime.evaluate", {"expression": expr, "returnByValue": True}, session_id=sid)
+            val = res.get("result", {}).get("value")
+            if val:
+                return val
+        except Exception:
+            pass
+
+        # Fallback to CDP DOM domain
+        try:
+            doc_res = await self.cdp.send("DOM.getDocument", {"depth": -1}, session_id=sid)
+            node_id = doc_res.get("root", {}).get("nodeId")
+            if node_id:
+                html_res = await self.cdp.send("DOM.getOuterHTML", {"nodeId": node_id}, session_id=sid)
+                return html_res.get("outerHTML") or ""
+        except Exception:
+            pass
+        return ""
+
     async def get_outer_html(self, selector: Optional[str] = None) -> str:
         """
         Retrieves full document HTML or specific element HTML.
         """
-        sid = self.get_session_id()
-        if selector:
-            expr = f"""
-            (() => {{
-                let sel = {json.dumps(selector)};
-                let el = sel.startsWith("#") && !isNaN(sel.slice(1)) ?
-                         document.querySelector(`[data-agent-ref='${{sel.slice(1)}}']`) :
-                         document.querySelector(sel);
-                return el ? el.outerHTML : '';
-            }})()
-            """
-        else:
-            expr = "document.documentElement.outerHTML"
+        if not selector:
+            return await self.get_page_html()
 
-        res = await self.cdp.send("Runtime.evaluate", {"expression": expr, "returnByValue": True}, session_id=sid)
-        return res.get("result", {}).get("value", "")
+        sid = self.get_session_id()
+        expr = f"""
+        (() => {{
+            let sel = {json.dumps(selector)};
+            let el = sel.startsWith("#") && !isNaN(sel.slice(1)) ?
+                     document.querySelector(`[data-agent-ref='${{sel.slice(1)}}']`) :
+                     document.querySelector(sel);
+            return el ? el.outerHTML : '';
+        }})()
+        //# sourceURL=__agent_internal_outer_html__.js
+        """
+        try:
+            res = await self.cdp.send("Runtime.evaluate", {"expression": expr, "returnByValue": True}, session_id=sid)
+            return res.get("result", {}).get("value", "")
+        except Exception:
+            return ""

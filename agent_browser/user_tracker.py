@@ -41,6 +41,7 @@ USER_TRACKER_INJECT_JS = r"""
             const payload = {
                 type: evtName,
                 timestamp: Date.now(),
+                time: new Date().toISOString(),
                 pixel: {
                     x: Math.round(e.clientX),
                     y: Math.round(e.clientY),
@@ -55,7 +56,9 @@ USER_TRACKER_INJECT_JS = r"""
                     className: target ? target.className || '' : '',
                     selector: getCssSelector(target),
                     text: (target ? (target.innerText || target.textContent || '') : '').trim().slice(0, 100),
-                    value: target && 'value' in target ? String(target.value).slice(0, 100) : undefined,
+                    value: target && 'value' in target
+                        ? ((target.type === 'password') ? '[redacted]' : String(target.value).slice(0, 100))
+                        : undefined,
                     rect: {
                         x: Math.round(rect.x),
                         y: Math.round(rect.y),
@@ -84,7 +87,7 @@ USER_TRACKER_INJECT_JS = r"""
                 tag: target.tagName.toLowerCase(),
                 id: target.id || '',
                 selector: getCssSelector(target),
-                value: String(target.value || '').slice(0, 150)
+                value: (target.type === 'password') ? '[redacted]' : String(target.value || '').slice(0, 150)
             }
         };
         if (window.__agentUserActionBinding) {
@@ -133,11 +136,11 @@ class UserTracker:
         self.binding_name = "__agentUserActionBinding"
         self._installed = False
 
-    async def enable(self):
+    async def enable(self, session_id=None):
         """
         Installs the CDP binding and evaluates the script on new document creation.
         """
-        sid = self.get_session_id()
+        sid = session_id or self.get_session_id()
         try:
             # 1. Add CDP binding
             await self.cdp.send("Runtime.addBinding", {"name": self.binding_name}, session_id=sid)
@@ -155,11 +158,11 @@ class UserTracker:
             pass
 
         # 3. Inject directly into current document
-        await self.inject_tracker()
+        await self.inject_tracker(session_id=sid)
         self._installed = True
 
-    async def inject_tracker(self):
-        sid = self.get_session_id()
+    async def inject_tracker(self, session_id=None):
+        sid = session_id or self.get_session_id()
         await self.cdp.send(
             "Runtime.evaluate",
             {"expression": USER_TRACKER_INJECT_JS, "userGesture": True},
@@ -175,6 +178,12 @@ class UserTracker:
             try:
                 action_data = json.loads(payload_str)
                 action_data["id"] = f"act_{len(self.action_history) + 1}_{int(time.time()*1000)}"
+                action_data["time"] = action_data.get("time") or time.time()
+                element = action_data.get("element") or {}
+                if element.get("type") == "password" or (element.get("selector") or "").lower().find("password") >= 0:
+                    if element.get("value"):
+                        element["value"] = "[redacted]"
+                        action_data["element"] = element
                 self.action_history.append(action_data)
                 if len(self.action_history) > self._max_history:
                     self.action_history.pop(0)

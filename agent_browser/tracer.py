@@ -1,7 +1,9 @@
 import time
 import asyncio
-import json
 from typing import Dict, Any, List, Optional, Callable
+
+from agent_browser.evidence import build_trace_report, make_action_tag, slice_since, summarize_request
+from agent_browser.quiescence import QuiescenceTracker, wait_for_quiescence
 
 
 INJECT_MUTATION_TRACKER_JS = r"""
@@ -16,17 +18,30 @@ INJECT_MUTATION_TRACKER_JS = r"""
         observer: null
     };
 
+    tracker.truncated = false;
     tracker.observer = new MutationObserver((mutationsList) => {
         for (let m of mutationsList) {
-            if (tracker.mutations.length > 200) break;
+            if (tracker.mutations.length >= 200) {
+                tracker.truncated = true;
+                break;
+            }
             if (m.type === 'childList') {
                 for (let n of m.addedNodes) {
+                    if (tracker.mutations.length >= 200) {
+                        tracker.truncated = true;
+                        break;
+                    }
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         tracker.mutations.push({
                             type: 'added',
                             tag: n.tagName.toLowerCase(),
                             id: n.id || undefined,
                             text: (n.innerText || n.textContent || '').trim().slice(0, 80)
+                        });
+                    } else if (n.nodeType === Node.TEXT_NODE && (n.textContent || '').trim()) {
+                        tracker.mutations.push({
+                            type: 'text',
+                            text: (n.textContent || '').trim().slice(0, 80)
                         });
                     }
                 }
@@ -40,6 +55,11 @@ INJECT_MUTATION_TRACKER_JS = r"""
                         });
                     }
                 }
+            } else if (m.type === 'characterData') {
+                tracker.mutations.push({
+                    type: 'text',
+                    text: (m.target.textContent || '').trim().slice(0, 80)
+                });
             } else if (m.type === 'attributes') {
                 tracker.mutations.push({
                     type: 'attribute_changed',
@@ -54,6 +74,7 @@ INJECT_MUTATION_TRACKER_JS = r"""
     tracker.observer.observe(document.body || document.documentElement, {
         childList: true,
         subtree: true,
+        characterData: true,
         attributes: true,
         attributeFilter: ['class', 'style', 'disabled', 'hidden', 'aria-expanded', 'aria-selected', 'value']
     });
@@ -64,10 +85,13 @@ INJECT_MUTATION_TRACKER_JS = r"""
 
 GET_MUTATIONS_JS = r"""
 (() => {
-    if (!window.__agentMutationTracker) return [];
-    const list = window.__agentMutationTracker.mutations;
-    window.__agentMutationTracker.mutations = [];
-    return list;
+    if (!window.__agentMutationTracker) return { mutations: [], truncated: false };
+    const tracker = window.__agentMutationTracker;
+    const list = tracker.mutations;
+    const truncated = !!tracker.truncated;
+    tracker.mutations = [];
+    tracker.truncated = false;
+    return { mutations: list, truncated: truncated };
 })()
 """
 
@@ -77,12 +101,124 @@ class ActionTracer:
     Traces user interactions (clicks, inputs, navigations) and tracks causal downstream
     effects across DOM mutations, HTTP requests, console logs, and runtime errors.
     """
-    def __init__(self, cdp_conn, dom_engine, network_engine, runtime_engine, active_session_id_getter):
+    # Strict settle probe: requestIdleCallback only fires when no runnable
+    # task exists; its deadline reveals whether a timer is due imminently.
+    IDLE_PROBE_JS = (
+        "(async () => {"
+        " const dl = await new Promise(r => typeof requestIdleCallback === 'function'"
+        " ? requestIdleCallback(d => r({idle: !d.didTimeout, rem: d.timeRemaining()}), {timeout: 200})"
+        " : r({idle: true, rem: -1}));"
+        " return {idle: dl.idle, rem: dl.rem,"
+        " busy: document.querySelectorAll('[aria-busy=\"true\"]').length};"
+        "})()"
+    )
+
+    def __init__(self, cdp_conn, dom_engine, network_engine, runtime_engine, active_session_id_getter, activity_monitor=None, strict_probe: bool = False):
         self.cdp = cdp_conn
         self.dom = dom_engine
         self.network = network_engine
         self.runtime = runtime_engine
         self.get_session_id = active_session_id_getter
+        # Optional synchronous NetworkActivityMonitor (never-dropped ledger).
+        self.activity_monitor = activity_monitor
+        # Opt-in strict mode: also require a deep idle callback (no timer
+        # due within the idle window, no aria-busy region) before settling.
+        self.strict_probe = strict_probe
+
+    async def _settle(self, start_req_count: int, timeout_s: float, action_type: str = "") -> Dict[str, Any]:
+        """Feed a QuiescenceTracker from the network buffer until quiet/cap."""
+        # Typing gets a floor: debounced handlers (100-300ms) have not fired
+        # when the keystrokes land, so an empty ledger is not yet quiet.
+        floor_s = 0.35 if action_type == "type" else 0.0
+        tracker = QuiescenceTracker(quiet_window_s=0.25, floor_s=floor_s)
+        seen_finished: set = set()
+
+        monitor = self.activity_monitor
+
+        async def _poll():
+            if monitor is not None:
+                # The sync ledger is authoritative for in-flight state: it
+                # cannot have lost an event to the async handler cap.
+                snap = monitor.snapshot()
+                for rid in snap["in_flight"]:
+                    tracker.note_request_start(rid)
+                for rid in list(tracker.in_flight):
+                    if rid not in snap["in_flight"]:
+                        tracker.note_request_end(rid)
+                if snap["last_activity"] > tracker.last_activity:
+                    tracker.last_activity = snap["last_activity"]
+                return
+            ids = slice_since(self.network.traffic_order, start_req_count)
+            for rid in ids:
+                entry = self.network.get_request(rid)
+                if not entry:
+                    continue
+                if entry.get("status") is None:
+                    tracker.note_request_start(rid, entry.get("resource_type"), entry.get("url"))
+                elif rid not in seen_finished:
+                    seen_finished.add(rid)
+                    tracker.note_request_end(rid)
+
+        result = await wait_for_quiescence(tracker, timeout_s=max(0.2, timeout_s), poll=_poll)
+        result["activity_source"] = "sync_monitor" if monitor is not None else "traffic_buffer"
+
+        # Stamped-probe verification: a quiet reading can be stale -- activity
+        # may have started while the tracker was concluding. Stamp the
+        # monitor's activity sequence, run one main-thread probe (a plain
+        # Runtime.evaluate round trip queues behind pending tasks/microtasks,
+        # so its return proves the thread drained), and only trust the settle
+        # if the sequence is unchanged across the probe. Otherwise re-wait.
+        result["probe_verified"] = None
+        if monitor is not None and result.get("settled"):
+            import time as _time
+
+            deadline = _time.monotonic() + max(0.2, timeout_s)
+            for _ in range(3):
+                seq_before = monitor.snapshot()["activity_seq"]
+                try:
+                    await self.runtime.evaluate("performance.now()")
+                except Exception:
+                    break
+                seq_after = monitor.snapshot()["activity_seq"]
+                if seq_after == seq_before:
+                    if self.strict_probe:
+                        idle_ok = await self._idle_probe()
+                        result["idle_depth_ok"] = idle_ok
+                        if not idle_ok:
+                            result["probe_verified"] = False
+                            if _time.monotonic() >= deadline:
+                                break
+                            result = await wait_for_quiescence(
+                                tracker, timeout_s=max(0.2, deadline - _time.monotonic()), poll=_poll)
+                            result["activity_source"] = "sync_monitor"
+                            if not result.get("settled"):
+                                break
+                            continue
+                    result["probe_verified"] = True
+                    break
+                result["probe_verified"] = False
+                if _time.monotonic() >= deadline:
+                    break
+                result = await wait_for_quiescence(
+                    tracker, timeout_s=max(0.2, deadline - _time.monotonic()), poll=_poll)
+                result["activity_source"] = "sync_monitor"
+                if not result.get("settled"):
+                    break
+        return result
+
+    async def _idle_probe(self) -> bool:
+        """Deep-idle check: idle callback fired, not shallow, no aria-busy."""
+        try:
+            res = await self.runtime.evaluate(self.IDLE_PROBE_JS)
+        except Exception:
+            return False
+        value = res.get("value") if isinstance(res, dict) else None
+        if not isinstance(value, dict):
+            return False
+        if not value.get("idle") or (value.get("busy") or 0):
+            return False
+        rem = value.get("rem", -1)
+        return rem is None or rem < 0 or rem >= 8
 
     async def trace_action(
         self,
@@ -122,6 +258,7 @@ class ActionTracer:
         start_req_count = len(self.network.traffic_order)
         start_err_count = len(self.runtime.exceptions)
         start_log_count = len(self.runtime.console_logs)
+        action_tag = make_action_tag(f"{int(start_time * 1000)}-{action_type}")
 
         action_error = None
         action_result = None
@@ -129,16 +266,17 @@ class ActionTracer:
         # 2. Execute Action
         try:
             if action_type == "click":
-                action_result = await self.dom.click(target)
+                action_result = await self.dom.click(target, action_tag=action_tag)
             elif action_type == "type":
                 text = params.get("text", "")
                 clear_first = params.get("clear_first", True)
-                action_result = await self.dom.type_text(target, text, clear_first=clear_first)
+                action_result = await self.dom.type_text(target, text, clear_first=clear_first, action_tag=action_tag)
             elif action_type == "navigate":
+                from agent_browser.cdp import wait_for_navigation
                 url = target or params.get("url", "")
-                if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("about:"):
-                    url = "https://" + url
-                action_result = await self.cdp.send("Page.navigate", {"url": url}, session_id=sid)
+                action_result = await wait_for_navigation(self.cdp, sid, url)
+                if not action_result.get("navigated", True):
+                    action_error = action_result.get("error") or "navigation failed"
             elif action_type == "eval":
                 expr = target or params.get("expression", "")
                 action_result = await self.runtime.evaluate(expr)
@@ -166,8 +304,10 @@ class ActionTracer:
         except Exception as e:
             action_error = str(e)
 
-        # 3. Settle wait to collect asynchronous downstream effects
-        await asyncio.sleep(settle_timeout)
+        # 3. Event-driven settle: wait until requests started after the action
+        # have finished and activity is quiet, capped by settle_timeout as the
+        # hard (deadlock-proof) bound. No fixed full-length sleep.
+        settle_info = await self._settle(start_req_count, settle_timeout, action_type=action_type)
 
         duration_ms = round((time.time() - start_time) * 1000, 2)
 
@@ -185,85 +325,60 @@ class ActionTracer:
         except Exception:
             pass
 
-        # Harvest triggered mutations
+        # Harvest observed mutations. A request that merely arrived in the
+        # settle window is an observation, not a proven trigger.
         mutations = []
+        mutation_truncated = False
         try:
             m_res = await self.cdp.send("Runtime.evaluate", {"expression": GET_MUTATIONS_JS, "returnByValue": True}, session_id=sid, timeout=2.0)
-            mutations = m_res.get("result", {}).get("value", []) or []
+            harvested = m_res.get("result", {}).get("value", []) or []
+            if isinstance(harvested, dict):
+                mutations = harvested.get("mutations") or []
+                mutation_truncated = bool(harvested.get("truncated"))
+            elif isinstance(harvested, list):
+                mutations = harvested
         except Exception:
             pass
 
-        # Harvest triggered network requests
-        triggered_request_ids = self.network.traffic_order[start_req_count:]
-        triggered_requests = []
-        failing_requests = []
-        for rid in triggered_request_ids:
-            r = self.network.get_request(rid)
-            if r:
-                summary = {
-                    "id": rid,
-                    "url": r.get("url"),
-                    "method": r.get("method"),
-                    "status": r.get("status"),
-                    "resource_type": r.get("resource_type"),
-                    "duration_ms": r.get("duration_ms")
-                }
-                triggered_requests.append(summary)
-                if r.get("status") in ("FAILED",) or (isinstance(r.get("status"), int) and r.get("status") >= 400):
-                    failing_requests.append(r)
+        observed_ids = slice_since(self.network.traffic_order, start_req_count)
+        observed_requests = []
+        for rid in observed_ids:
+            entry = self.network.get_request(rid)
+            if not entry:
+                continue
+            observed_requests.append(summarize_request(
+                entry,
+                "request appended after the pre-action index snapshot",
+                action_tag=action_tag,
+            ))
 
-        # Harvest triggered runtime exceptions and console errors
-        triggered_exceptions = self.runtime.exceptions[start_err_count:]
-        triggered_logs = self.runtime.console_logs[start_log_count:]
-        triggered_console_errors = [l for l in triggered_logs if l["type"] == "error"]
+        observed_exceptions = slice_since(self.runtime.exceptions, start_err_count)
+        observed_logs = slice_since(self.runtime.console_logs, start_log_count)
+        observed_console_errors = [l for l in observed_logs if l.get("type") == "error"]
 
-        # 5. Formulate Diagnostic Correlation
-        diagnostics = []
-        if action_error:
-            diagnostics.append(f"Action failed directly during execution: {action_error}")
-        if failing_requests:
-            for fr in failing_requests:
-                diagnostics.append(f"Action triggered HTTP failure: {fr.get('method')} {fr.get('url')} -> Status {fr.get('status')} ({fr.get('error_text') or ''})")
-        if triggered_exceptions:
-            for ex in triggered_exceptions:
-                diagnostics.append(f"Action triggered Uncaught JS Exception: {ex.get('description') or ex.get('text')} at {ex.get('url')}:{ex.get('line')}")
-        if not action_error and not failing_requests and not triggered_exceptions:
-            diagnostics.append("Action executed cleanly with zero network or runtime errors.")
-
-        report = {
-            "action": {
-                "type": action_type,
-                "target": target,
-                "params": params,
-                "success": action_error is None,
-                "error": action_error,
-                "result": action_result
-            },
-            "timeline": {
-                "duration_ms": duration_ms,
-                "timestamp": start_time
-            },
-            "navigation": {
-                "navigated": (pre_url != post_url),
-                "from_url": pre_url,
-                "to_url": post_url,
-                "title": post_title
-            },
-            "dom_changes": {
-                "mutation_count": len(mutations),
-                "sample_mutations": mutations[:15]
-            },
-            "network": {
-                "requests_triggered_count": len(triggered_requests),
-                "requests": triggered_requests,
-                "failing_requests_count": len(failing_requests)
-            },
-            "runtime": {
-                "exceptions_count": len(triggered_exceptions),
-                "exceptions": triggered_exceptions,
-                "console_errors_count": len(triggered_console_errors)
-            },
-            "diagnostics": diagnostics
-        }
-
-        return report
+        window_note = (
+            "Requests whose initiator async stack contains the action's stamped "
+            f"sourceURL ({action_tag}) are labeled attributed (proven). Other "
+            "requests in the window are temporal co-occurrence only and are not "
+            "labeled as triggered by the action."
+        )
+        return build_trace_report(
+            action_type=action_type,
+            target=target,
+            params=params,
+            action_error=action_error,
+            action_result=action_result,
+            start_time=start_time,
+            duration_ms=duration_ms,
+            pre_url=pre_url,
+            post_url=post_url,
+            post_title=post_title,
+            mutations=mutations,
+            mutation_truncated=mutation_truncated,
+            observed_requests=observed_requests,
+            observed_exceptions=observed_exceptions,
+            observed_console_errors=observed_console_errors,
+            window_note=window_note,
+            action_tag=action_tag,
+            settle_info=settle_info,
+        )
