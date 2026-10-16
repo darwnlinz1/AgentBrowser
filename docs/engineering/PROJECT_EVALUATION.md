@@ -129,3 +129,57 @@ Requirement-by-requirement audit against current tree state. Evidence is measure
 Stale v1 gaps now closed: MCP session provider (cycle 4/20 stdio live), live per-archetype corpus scoring (cycle 3), pipe transport on Windows (cycles 16-17; v1 wrongly assumed POSIX-only), OOPIF capture (cycle 8), cold-start attribution (segment profile: Chrome process launch itself ~1.5s on this Windows box; readiness polling and domain setup are not the bottleneck).
 
 Genuinely remaining: (1) default view still the legacy injected-JS snapshot -- AXTree is available and budgeted but not yet the default; commands still target the active page session only (child sessions are captured, not yet individually driven); (2) per-session ordered lanes / Raw params for events (replies are Raw-routed; events still full-parse by design); (3) strict timer-ledger via main-world instrumentation (deliberately opt-in only, detectability tradeoff); (4) Crawl4AI/Puppeteer competitor numbers still not measured (not installed); Playwright comparisons on this machine are unreliable (driver lock + warm cache) and must be redone on a clean runner; (5) commit/PR + Automation arming await owner decisions above.
+
+---
+# Evaluation v3 -- post-cycles 27-53 audit (2026-10-16)
+
+Every v2 "genuinely remaining" item has since been closed or deliberately
+re-decided; evidence below is measured in-cycle, not intent.
+
+| v2 remaining item | Resolution (cycle) |
+|---|---|
+| AXTree not the default view; child sessions not individually driven | AXTree is the default agent view with last-view ref routing (27); tabs list/activate + CLI `--page` + MCP tab tools drive page sessions individually (28, 29, 46); popup targets released via `Runtime.runIfWaitingForDebugger` (46) |
+| Raw params for events; per-session ordering | Method-interest registry skips full parse for unwanted events (51); per-session FIFO lanes with counted spill (52) |
+| Commit/PR blocked on owner review | Owner reviewed the manifest (`docs/engineering/COMMIT_REVIEW.md`, secret scan 0 hits); branch committed in scoped batches and pushed to `origin/hyper/phase0-foundation` (through cycle 51 at audit time; cycles 52-53 local) |
+| Scheduled Automation | Cancelled by owner decision; Goal + in-session loop retained |
+
+New capability since v2: human handoff protocol (40), WebSocket/SSE
+semantic decoding (41), WASM inspection (42), blackbox protobuf/gRPC-Web
+decoding (43), exception metadata + backendNodeId DOM fallback (44),
+DOMSnapshot layout join with occlusion flags (45), scoped AX pin re-reads
+(47), the OBSERVE..VERIFY DebugLoop orchestrator exposed on Python API,
+daemon route, CLI, and MCP (48-49, hardened 50), and narrowed Fetch.enable
+patterns derived from rules (53).
+
+Most significant audit finding of this batch: cycle 51 proved the cycle-24
+Raw-envelope reply routing had been silently dead since introduction
+(msgspec `Raw | None` rejects non-empty frames); all earlier envelope
+benchmarks measured the instant-failure path. Fixed and re-measured
+honestly (below). This is recorded here because it changed the meaning of
+a previously "Proven" row: HYPER transport was proven live end-to-end, but
+its headline routing optimization was not actually active until cycle 51.
+
+Measured now (this machine, Chrome 155):
+- Chrome-free gates: **183 pytest passed** across cycle/phase/corpus/
+  benchmark/docs/evidence suites (baseline 69 at v1, 132 at first commit).
+- Live fault corpus: **10/10, attribution precision = recall = 1.0,
+  false-supported = 0, dropped events = 0**; live suite 7/7; daemon smoke
+  PASS; interventional promotion proven with narrowed Fetch patterns.
+- DebugLoop live: DONE/verified, 6/6 gates, time-to-root-cause ~285 ms.
+- Codec: encode ~1.33M frames/s, full decode ~878k/s, envelope route
+  ~1.48M/s; nested 200KB reply routes ~6.2x faster than full decode; flat
+  20KB string reply ~0.93x (scan-bound worst case, reported in harness).
+- Token density: 1,231 action-graph tokens vs ~9,422 naive DOM (7.65x).
+
+Genuinely remaining after v3: (1) strict timer-ledger quiescence via
+main-world instrumentation -- deliberately opt-in only (detectability
+tradeoff), not a defect; (2) Crawl4AI/Puppeteer competitor numbers --
+still not installed here, and Playwright comparisons on this Windows box
+remain unreliable; rerun on a clean runner before quoting; (3) the
+`AvoidCorsURLLoaderRestartOnRedirect` Chrome flag from the Track-1
+research list -- not adopted: no local measurement showed an effect, and
+flags are not added on faith; (4) PR creation for the pushed branch --
+owner action; local cycles 52-53 also await push. Scope boundary held
+throughout: debugging/QA/authorized testing only, crypto/source surfaces
+observe-only, consent-gated, redacted; the loop ran only against the
+local seeded corpus.
