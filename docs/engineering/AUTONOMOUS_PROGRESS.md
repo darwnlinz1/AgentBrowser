@@ -233,3 +233,7 @@ Controller handoff protocol: start_handoff pauses the agent (navigate/trace/eval
 ## 2026-10-16 cycle 41: WebSocket/SSE semantics
 
 agent_browser/stream_decode.py classifies WebSocket payloads (Socket.IO events, JSON, heartbeats, binary) and SSE messages; NetworkEngine now records socket lifecycle (created/closed, per-direction frame counts) and Network.eventSourceMessageReceived, and the AI traffic summary gains a decoded STREAMS section. Live: bidirectional Socket.IO chat decoded by event name, SSE reading parsed to {temp: 21}.
+
+## 2026-10-16 cycle 42: WASM inspection
+
+agent_browser/wasm_inspect.py parses WASM section tables, function counts, imports and exports from raw bytecode; SourceInspector captures scriptLanguage/is_wasm, fetches bytecode via Debugger.getScriptSource, and streams disassembly via Debugger.disassembleWasmModule with a chunk cap (an uncapped loop bug was caught by tests). Live: an in-page compiled module appears as wasm://..., exports 'f', and disassembles to real WAT.

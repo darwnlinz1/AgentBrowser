@@ -230,6 +230,8 @@ class SourceInspector:
                 "lines": end_line - start_line + 1,
                 "length": params.get("length", 0),
                 "hash": params.get("hash", ""),
+                "language": params.get("scriptLanguage") or "JavaScript",
+                "is_wasm": (params.get("scriptLanguage") or "") == "WebAssembly",
                 "content": None  # loaded on demand or cached
             }
             self.scripts[script_id] = script_info
@@ -283,6 +285,65 @@ class SourceInspector:
         except Exception as e:
             return f"[Error fetching script {script_id}: {str(e)}]"
 
+    async def get_wasm_bytecode(self, script_id: str) -> Optional[bytes]:
+        """Raw .wasm bytes for a WebAssembly script (getScriptSource returns base64)."""
+        import base64
+
+        sid = self.get_session_id()
+        try:
+            res = await self.cdp.send("Debugger.getScriptSource", {"scriptId": script_id}, session_id=sid)
+        except Exception:
+            return None
+        bytecode = res.get("bytecode")
+        if not bytecode:
+            return None
+        try:
+            return base64.b64decode(bytecode)
+        except Exception:
+            return None
+
+    def list_wasm_modules(self) -> List[Dict[str, Any]]:
+        return [
+            {"scriptId": s_id, "url": info.get("url"), "length": info.get("length")}
+            for s_id, info in self.scripts.items() if info.get("is_wasm")
+        ]
+
+    async def inspect_wasm(self, script_id: str) -> Optional[Dict[str, Any]]:
+        """Section table + function count + imports/exports for a WASM module."""
+        from agent_browser.wasm_inspect import parse_wasm
+
+        raw = await self.get_wasm_bytecode(script_id)
+        if raw is None:
+            return None
+        return {"scriptId": script_id, **parse_wasm(raw)}
+
+    async def disassemble_wasm(self, script_id: str, max_chunks: int = 8) -> Optional[Dict[str, Any]]:
+        """Instruction text via Debugger.disassembleWasmModule (chunked)."""
+        sid = self.get_session_id()
+        try:
+            res = await self.cdp.send("Debugger.disassembleWasmModule", {"scriptId": script_id}, session_id=sid)
+        except Exception:
+            return None
+        lines: List[str] = []
+        total = res.get("totalNumberOfLines")
+        stream_id = res.get("streamId")
+        chunk = res.get("chunk") or {}
+        lines.extend(chunk.get("lines") or [])
+        chunks_fetched = 1
+        while stream_id and len(lines) < 10000 and chunks_fetched < max(1, max_chunks):
+            try:
+                nxt = await self.cdp.send(
+                    "Debugger.nextWasmDisassemblyChunk", {"streamId": stream_id}, session_id=sid)
+            except Exception:
+                break
+            chunks_fetched += 1
+            chunk = nxt.get("chunk") or {}
+            new_lines = chunk.get("lines") or []
+            if not new_lines:
+                break
+            lines.extend(new_lines)
+        return {"scriptId": script_id, "total_lines": total, "lines": lines[:10000], "truncated": len(lines) >= 10000 or chunks_fetched >= max(1, max_chunks)}
+
     async def list_all_scripts(self, include_inline: bool = True) -> List[Dict[str, Any]]:
         """
         Returns list of all scripts loaded by the page.
@@ -296,7 +357,9 @@ class SourceInspector:
                 "url": s_info["url"],
                 "is_inline": s_info["is_inline"],
                 "lines": s_info["lines"],
-                "sourceMapURL": s_info["sourceMapURL"]
+                "sourceMapURL": s_info["sourceMapURL"],
+                "language": s_info.get("language", "JavaScript"),
+                "is_wasm": bool(s_info.get("is_wasm")),
             })
         return results
 
