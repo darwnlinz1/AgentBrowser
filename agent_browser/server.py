@@ -527,6 +527,26 @@ async def perf_vitals():
     return await ctrl.perf.snapshot()
 
 
+class DebugEpisodeModel(BaseModel):
+    url: str
+    action: str = "click"
+    target: Optional[str] = None
+    verify_runs: int = 3
+
+
+@app.post("/debug/episode")
+async def debug_episode(m: DebugEpisodeModel):
+    """
+    Run one OBSERVE..VERIFY episode (no fix hook: the after-state is the
+    current page, so VERIFY honestly reports BLOCKED when the bug persists).
+    """
+    from agent_browser.loop_engine import DebugLoop
+
+    ctrl = require_controller()
+    return await DebugLoop(ctrl).run_episode(
+        m.url, action=m.action, target=m.target, verify_runs=m.verify_runs)
+
+
 @app.get("/cookies")
 async def get_cookies(include_secrets: bool = Query(False)):
     ctrl = require_controller()

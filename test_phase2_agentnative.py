@@ -209,6 +209,13 @@ async def test_mcp_tab_tools():
 
 
 @pytest.mark.asyncio
+async def test_mcp_debug_episode_tool_registered():
+    names = {t["name"] for t in list_tools()}
+    assert "debug_episode" in names
+    assert "perf_vitals" in names
+
+
+@pytest.mark.asyncio
 async def test_mcp_dispatcher_rejects_eval_and_routes_calls():
     class FakeNet:
         def search_traffic(self, query=None, status=None, limit=20):

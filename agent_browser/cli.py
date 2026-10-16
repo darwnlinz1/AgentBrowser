@@ -242,6 +242,11 @@ def main():
     # diagnose
     subparsers.add_parser("diagnose", help="Run automated root-cause diagnostics on current page")
     subparsers.add_parser("perf", help="Web-vitals snapshot (LCP/CLS/long-tasks) + renderer metrics")
+    dl_p = subparsers.add_parser("debug-loop", help="Run an OBSERVE..VERIFY debug episode")
+    dl_p.add_argument("url", help="Target URL")
+    dl_p.add_argument("--action", default="click", choices=["click", "type", "navigate", "eval", "hover", "scroll"])
+    dl_p.add_argument("--target", default=None, help="Target selector or #ref")
+    dl_p.add_argument("--verify-runs", type=int, default=3)
     subparsers.add_parser("dialogs", help="List JavaScript dialogs seen + current policy")
     dp_p = subparsers.add_parser("dialog-policy", help="Set JavaScript dialog policy")
     dp_p.add_argument("policy", choices=["accept", "dismiss"])
@@ -537,6 +542,13 @@ def main():
 
     elif args.command == "perf":
         res = make_request("GET", "/perf/vitals", server_url=args.server)
+        print(json.dumps(res, indent=2))
+
+    elif args.command == "debug-loop":
+        res = make_request("POST", "/debug/episode", {
+            "url": args.url, "action": args.action,
+            "target": args.target, "verify_runs": args.verify_runs,
+        }, server_url=args.server)
         print(json.dumps(res, indent=2))
 
     elif args.command == "dialogs":

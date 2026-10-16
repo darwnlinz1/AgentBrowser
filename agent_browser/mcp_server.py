@@ -47,6 +47,7 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
     "repro_generate": {"tier": TIER_DIAGNOSTICS, "description": "Generate a failure-signature regression test for an action.", "properties": {"url": {"type": "string"}, "target": {"type": "string"}, "session_id": {"type": "string"}}, "required": ["url", "target"]},
     "user_actions": {"tier": TIER_INSPECTION, "description": "Recent human actions captured for co-debugging.", "properties": {"limit": {"type": "integer"}, "session_id": {"type": "string"}}},
     "perf_vitals": {"tier": TIER_DIAGNOSTICS, "description": "Web-vitals snapshot (LCP/CLS/long-tasks, graded) + renderer metrics.", "properties": {"session_id": {"type": "string"}}},
+    "debug_episode": {"tier": TIER_DIAGNOSTICS, "description": "Run an OBSERVE..VERIFY debug episode (no fix hook; reports BLOCKED while the bug persists).", "properties": {"url": {"type": "string"}, "action": {"type": "string"}, "target": {"type": "string"}, "verify_runs": {"type": "integer"}, "session_id": {"type": "string"}}, "required": ["url"]},
     "tabs_list": {"tier": TIER_INSPECTION, "description": "List page tabs attached to a session's browser.", "properties": {"session_id": {"type": "string"}}},
     "tab_activate": {"tier": TIER_MUTATION, "description": "Make a page tab (from tabs_list) the active tab for subsequent tools.", "properties": {"tab_session_id": {"type": "string"}, "session_id": {"type": "string"}}, "required": ["tab_session_id"]},
 }
@@ -158,6 +159,14 @@ class MCPDispatcher:
         return await handler(args)
 
     # -- inspection -------------------------------------------------------
+    async def _tool_debug_episode(self, args):
+        from agent_browser.loop_engine import DebugLoop
+
+        ctrl = self._ctrl(args)
+        return await DebugLoop(ctrl).run_episode(
+            args["url"], action=args.get("action") or "click",
+            target=args.get("target"), verify_runs=int(args.get("verify_runs") or 3))
+
     async def _tool_perf_vitals(self, args):
         ctrl = self._ctrl(args)
         return await ctrl.perf.snapshot()

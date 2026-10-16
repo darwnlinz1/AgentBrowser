@@ -261,3 +261,7 @@ DOMEngine.get_scoped_axtree resolves a selector (or #ref) to a backend node and 
 ## 2026-10-16 cycle 48: DebugLoop orchestrator (loop tick)
 
 agent_browser/loop_engine.py drives one OBSERVE->INSPECT->TRACE->DEBUG->MODIFY->REPLAY->VERIFY episode: failure signature from the trace, causal edge = failing request tied to the action (a successful attributed request after a fix is not the edge), VERIFY via the positive-artifact gates in verify.py. Live on case 4 with an interception fix: state DONE, all 6 gates pass, symptom absent across 3 reruns, time-to-root-cause 295.8ms (fixtures/run_debug_loop_live.py).
+
+## 2026-10-16 cycle 49: debug loop surfaces
+
+DebugLoop is now reachable from every operator surface, not just the Python API: POST /debug/episode (url, action, target, verify_runs), CLI `debug-loop <url> --target <#ref>`, and MCP tool `debug_episode` (diagnostics tier, 22 tools total). No fix hook travels across these boundaries, so VERIFY honestly reports BLOCKED while the bug persists; the fixed path stays Python-API/MCP composition. Gate: 27 Chrome-free passed across loop/perf/MCP/docs/hardening suites.

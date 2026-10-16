@@ -56,6 +56,7 @@ All commands can be executed directly via terminal using:
 | `activate-tab`| `python -m agent_browser activate-tab <session_id>` | Makes a page tab the active session |
 | `mcp` | `python -m agent_browser mcp --list-tools` | Lists the MCP tool catalog (stdio server: `python -m agent_browser.mcp_server`) |
 | `perf` | `python -m agent_browser perf` | Web-vitals snapshot (LCP/CLS/long-tasks, graded) + renderer metrics |
+| `debug-loop` | `python -m agent_browser debug-loop <url> --target <#ref>` | Runs an OBSERVE..VERIFY episode with evidence gates |
 | `dialogs` / `dialog-policy` | `python -m agent_browser dialogs` / `dialog-policy accept|dismiss` | JavaScript dialog log + handling policy (default dismiss) |
 | `downloads` | `python -m agent_browser downloads` | Downloads captured in this session (confined directory) |
 | `handoff` | `python -m agent_browser handoff start "reason"` / `handoff complete "summary"` | Human takeover: agent actions refused until completed |
