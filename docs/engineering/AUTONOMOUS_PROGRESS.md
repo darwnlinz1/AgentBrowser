@@ -321,3 +321,7 @@ The repo had zero automated checks, so .github/workflows/ci.yml now runs the cur
 ## 2026-10-16 cycle 63: real MCP stdio protocol test (loop tick)
 
 test_cycle63_mcp_stdio.py spawns the actual server subprocess and speaks MCP with the official client (initialize, tools/list, session_status call) -- the dispatcher unit tests alone could pass against a dead transport, as the SDK v2 rename proved earlier. It pins the tool catalog (>=20 tools incl. debug_episode, no eval/shutdown), the explicit-signature schema (debug_episode requires exactly url), and an honest empty session_status. Attribute access tolerates both SDK majors (inputSchema/isError vs input_schema/is_error). The CI glob picks the file up automatically on both OSes. Gates: local pass; CI verification follows the push.
+
+## 2026-10-16 cycle 64: live corpus in CI (loop tick)
+
+ci.yml gained a live-corpus job on ubuntu-latest: it runs fixtures/run_live_corpus.py (attribution precision/recall, false-background, dropped events against the runner's real headless Chrome) and python test_suite.py, so the PR is now gated on browser-truth metrics, not only Chrome-free suites. The heavier live harnesses (daemon smoke, interventional, journal minimize, debug loop) stay local. Verified via check runs at the pushed tip: live-corpus success on both the push and pull_request events, alongside chrome-free success on ubuntu+windows.
