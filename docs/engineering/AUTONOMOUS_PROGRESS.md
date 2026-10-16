@@ -313,3 +313,7 @@ Milestone sweep at cycle-59 HEAD (after the transport changes of cycles 51-53, q
 ## 2026-10-16 cycle 61: push + PR verified (loop tick)
 
 With Git credentials cached from the owner's earlier push, cycles 52-60 were pushed from the loop: origin/hyper/phase0-foundation now at the gate-clean HEAD. PR #1 (main <- hyper/phase0-foundation, 27 commits, 125 files) is open with head matching the pushed tip. The commit/PR deliverable of the goal is closed; the R&D loop continues on the branch.
+
+## 2026-10-16 cycle 62: CI on the PR (loop tick)
+
+The repo had zero automated checks, so .github/workflows/ci.yml now runs the curated Chrome-free battery (test_cycle*.py, test_phase*.py, corpus, benchmark, docs-coherence, evidence suites -- the same list the local gate uses) on pull_request and branch pushes, matrixed over ubuntu-latest and windows-latest with the [dev,fast,mcp] extras. Live-Chrome harnesses intentionally stay local (they need a real profile on the machine under test). Verified externally, not just locally: check runs for the pushed tip completed success on both OSes for both events. Gates: PR #1 CI green x4 runs.
