@@ -301,3 +301,7 @@ Track 8's route-window item: NetworkActivityMonitor now tags every in-flight req
 ## 2026-10-16 cycle 58: lane lifecycle on socket drop (loop tick)
 
 Review of the cycle-52 lanes found a lifecycle hole: lanes were only closed in disconnect(), so on an unexpected socket drop the queued handler calls and lane workers survived -- stale events could execute against a later reconnected session. CDPConnection now closes lanes in the ConnectionClosed path too, PipeCDPClient closes them on disconnect and on reader-thread exit, and queued coroutines discarded at close are counted in dropped_events (never silent). Tests pin it: with a parked first handler, r2/r3 queued behind it never run after the drop and dropped_events == 2. Gates: 197 Chrome-free passed.
+
+## 2026-10-16 cycle 59: socket sequence numbers (loop tick)
+
+Track 10's journal item completed for streams: WebSocket frames and SSE messages now carry a per-socket/per-stream monotonic seq (independent counters per requestId, interleaving-safe). Because both buffers truncate at 2000 entries, seq makes truncation gaps detectable after the fact instead of frames vanishing without a trace -- the same never-silent-loss accounting the rest of the pipeline uses. Gates: 199 Chrome-free passed; live corpus 10/10 dropped=0 (case 8 websocket-disconnect included).

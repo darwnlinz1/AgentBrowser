@@ -124,6 +124,10 @@ class NetworkEngine:
         self.ws_frames: List[Dict[str, Any]] = []
         self.ws_sockets: Dict[str, Dict[str, Any]] = {}
         self.sse_messages: List[Dict[str, Any]] = []
+        # Per-socket sequence numbers: gaps become visible when the capped
+        # buffers below truncate, instead of frames vanishing silently.
+        self._ws_seq: Dict[Any, int] = {}
+        self._sse_seq: Dict[Any, int] = {}
         self.intercept_rules: Dict[str, InterceptRule] = {}
         self.interception_enabled = False
         self.smart_filter: bool = True
@@ -547,9 +551,12 @@ class NetworkEngine:
             sock = self.ws_sockets.setdefault(params.get("requestId"), {"requestId": params.get("requestId"), "state": "open"})
             sock["frames_sent" if direction == "sent" else "frames_received"] = sock.get(
                 "frames_sent" if direction == "sent" else "frames_received", 0) + 1
+            rid_key = params.get("requestId")
+            self._ws_seq[rid_key] = self._ws_seq.get(rid_key, 0) + 1
             self.ws_frames.append({
                 "type": direction,
-                "requestId": params.get("requestId"),
+                "seq": self._ws_seq[rid_key],
+                "requestId": rid_key,
                 "timestamp": params.get("timestamp"),
                 "opcode": resp.get("opcode"),
                 "payload": payload,
@@ -564,6 +571,9 @@ class NetworkEngine:
 
             msg = parse_sse_chunk(params.get("data"), params.get("eventName"), params.get("eventId"))
             msg["requestId"] = params.get("requestId")
+            rid_key = params.get("requestId")
+            self._sse_seq[rid_key] = self._sse_seq.get(rid_key, 0) + 1
+            msg["seq"] = self._sse_seq[rid_key]
             msg["timestamp"] = params.get("timestamp")
             self.sse_messages.append(msg)
             if len(self.sse_messages) > 2000:
