@@ -87,14 +87,25 @@ def main() -> int:
             check("cli open", rc == 0 and json.loads(out).get("navigated") is True)
             rc, out, _ = cli("view")
             check("cli view", rc == 0 and "Trigger Broken Flow" in out)
-            rc, out, _ = cli("click", "#go")
-            data = json.loads(out)
-            by_path = {r["url"].rsplit("/", 1)[-1]: r for r in data["network"]["requests"]}
-            check("cli click attribution",
-                  by_path.get("failing-endpoint", {}).get("confidence") == "attributed"
-                  and by_path.get("background-ping", {}).get("confidence") == "temporal"
-                  and data["runtime"]["exceptions_count"] == 1,
-                  str([(k, v.get("confidence")) for k, v in by_path.items()]))
+            # The fixture's background ping fires every 400ms while the
+            # tracer's quiet window is 250ms, so a trace can legitimately
+            # settle in the gap between pings on a loaded runner. Retry
+            # the click (same full oracle per attempt) instead of racing
+            # the ping period once.
+            attribution_ok = False
+            attribution_detail = ""
+            for _attempt in range(3):
+                rc, out, _ = cli("click", "#go")
+                data = json.loads(out)
+                by_path = {r["url"].rsplit("/", 1)[-1]: r for r in data["network"]["requests"]}
+                attribution_detail = str([(k, v.get("confidence")) for k, v in by_path.items()])
+                attribution_ok = (
+                    by_path.get("failing-endpoint", {}).get("confidence") == "attributed"
+                    and by_path.get("background-ping", {}).get("confidence") == "temporal"
+                    and data["runtime"]["exceptions_count"] == 1)
+                if attribution_ok:
+                    break
+            check("cli click attribution", attribution_ok, attribution_detail)
             rc, out, _ = cli("stop")
             check("cli stop", rc == 0)
             # Graceful shutdown closes a real browser; on a loaded CI
