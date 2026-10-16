@@ -345,3 +345,7 @@ Track 8's last deferred item, landed as the research specified -- opt-in only: a
 ## 2026-10-16 cycle 69: PR body (loop tick)
 
 PR #1 carried an empty body (title only) across 39 commits / 131 files. It now has a structured reviewer body: what was built, the held scope boundary (with the explicit statement that owner WIP and root experiment scripts are excluded), measured verification at HEAD (CI matrix, corpus P=R=1.0 dropped=0, replay fidelity 1.0, interventional promotion, 208 Chrome-free, ~285ms time-to-root-cause), the cycle-51 envelope audit disclosure, reviewer pointers (evaluation v3, commit manifest), and the deliberate non-adoptions. Set via the GitHub API; no code change.
+
+## 2026-10-16 cycle 70: timer-ledger string-handler pass-through (loop tick)
+
+Review of the cycle-68 ledger JS found an observe-only violation: setTimeout accepts string-code handlers, and the wrapper would have swallowed them (typeof check returned undefined). String handlers now pass through unwrapped, with expiry tracked by a side cleanup timer. Verified live on Chrome: setTimeout('window.__strFired = 42', 30) fired correctly, a function handler fired, and the ledger counted 2 pending -> 0.

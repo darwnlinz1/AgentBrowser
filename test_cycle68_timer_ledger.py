@@ -18,6 +18,9 @@ def test_ledger_js_is_observe_only():
     assert "origSetTimeout" in TIMER_LEDGER_JS and "origSetInterval" in TIMER_LEDGER_JS
     assert "__agent_internal_timer_ledger__" in TIMER_LEDGER_JS
     assert "ledger.timeouts.set" in TIMER_LEDGER_JS
+    # String-code handlers must pass through unwrapped (legal JS that an
+    # observing wrapper must never swallow).
+    assert "typeof fn !== 'function'" in TIMER_LEDGER_JS
 
 
 def test_parse_and_block_decisions():

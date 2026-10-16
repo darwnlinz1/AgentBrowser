@@ -30,9 +30,18 @@ TIMER_LEDGER_JS = r"""
   const origClearInterval = window.clearInterval.bind(window);
   window.setTimeout = function (fn, delay, ...args) {
     const d = Number(delay) || 0;
+    if (typeof fn !== 'function') {
+      // String-code handlers are legal JS: pass through untouched (an
+      // observing wrapper must never swallow page code). Track expiry
+      // with a side cleanup timer instead of wrapping the handler.
+      const id = origSetTimeout(fn, d, ...args);
+      ledger.timeouts.set(id, Date.now() + d);
+      origSetTimeout(() => ledger.timeouts.delete(id), d);
+      return id;
+    }
     const id = origSetTimeout(function (...a) {
       ledger.timeouts.delete(id);
-      return typeof fn === 'function' ? fn(...a) : undefined;
+      return fn(...a);
     }, d, ...args);
     ledger.timeouts.set(id, Date.now() + d);
     return id;
