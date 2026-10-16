@@ -5,7 +5,9 @@ from agent_browser.axtree import (
     build_ref_table,
     diff_refs,
     find_reanchor,
+    join_layout,
     merkle_hashes,
+    parse_domsnapshot_layout,
     ref_freshness,
     render_budgeted_view,
     render_view,
@@ -127,7 +129,7 @@ class DOMEngine:
         # Numeric #ref clicks route to the table that issued them.
         self._last_view_source: Optional[str] = None
 
-    async def get_axtree_snapshot(self, include_text: bool = False) -> Dict[str, Any]:
+    async def get_axtree_snapshot(self, include_text: bool = False, include_layout: bool = False) -> Dict[str, Any]:
         """
         Node-identity snapshot from the Chromium accessibility tree.
 
@@ -146,6 +148,22 @@ class DOMEngine:
         nodes = res.get("nodes") or []
         previous = self._ax_refs
         refs = build_ref_table(nodes, include_text=include_text)
+        if include_layout:
+            # Join DOMSnapshot layout (rects, paint order) onto the AX refs
+            # for viewport/occlusion facts the AX tree alone cannot give.
+            try:
+                snap = await self.cdp.send("DOMSnapshot.captureSnapshot", {
+                    "computedStyles": ["display", "visibility", "opacity", "pointer-events", "cursor"],
+                    "includePaintOrder": True,
+                    "includeDOMRects": True,
+                    "includeBlendedBackgroundColors": False,
+                    "includeTextColorOpacities": False,
+                }, session_id=sid, timeout=30.0)
+                metrics = await self.cdp.send("Page.getLayoutMetrics", {}, session_id=sid)
+                viewport = (metrics.get("cssVisualViewport") or metrics.get("layoutViewport") or {})
+                refs = join_layout(refs, parse_domsnapshot_layout(snap.get("documents") or []), viewport)
+            except Exception:
+                pass
         self._ax_refs = refs
         self._ax_hashes = merkle_hashes(nodes)
         root_hash = None
@@ -161,8 +179,8 @@ class DOMEngine:
             "diff_from_previous": diff_refs(previous, refs) if previous else None,
         }
 
-    async def format_axtree_view(self, include_text: bool = False, budget_tokens: int = 400) -> str:
-        snap = await self.get_axtree_snapshot(include_text=include_text)
+    async def format_axtree_view(self, include_text: bool = False, budget_tokens: int = 400, include_layout: bool = True) -> str:
+        snap = await self.get_axtree_snapshot(include_text=include_text, include_layout=include_layout)
         # Title/URL via a cheap evaluate; failure is non-fatal.
         title = url = ""
         try:

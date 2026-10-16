@@ -113,6 +113,74 @@ def find_reanchor(stored: Dict[str, Any], refs: List[Dict[str, Any]]) -> Dict[st
     }
 
 
+def parse_domsnapshot_layout(documents: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """
+    Map backendNodeId -> layout facts from a DOMSnapshot.captureSnapshot
+    result: bounds (document coords), paint order, and a style whitelist.
+    Mirrors browser-use's join of DOMSnapshot layout onto DOM nodes.
+    """
+    out: Dict[int, Dict[str, Any]] = {}
+    for doc in documents or []:
+        nodes = doc.get("nodes") or {}
+        layout = doc.get("layout") or {}
+        backend_ids = nodes.get("backendNodeId") or []
+        bounds_list = layout.get("bounds") or []
+        paint_list = layout.get("paintOrders") or []
+        styles_list = layout.get("styles") or []
+        for layout_index, node_index in enumerate(layout.get("nodeIndex") or []):
+            if node_index is None or node_index >= len(backend_ids):
+                continue
+            backend_id = backend_ids[node_index]
+            bounds = bounds_list[layout_index] if layout_index < len(bounds_list) else []
+            rect = None
+            if len(bounds) >= 4:
+                rect = {"x": bounds[0], "y": bounds[1], "width": bounds[2], "height": bounds[3]}
+            out[backend_id] = {
+                "rect": rect,
+                "paint_order": paint_list[layout_index] if layout_index < len(paint_list) else None,
+                "styles": styles_list[layout_index] if layout_index < len(styles_list) else [],
+            }
+    return out
+
+
+def join_layout(refs: List[Dict[str, Any]], layout_by_backend: Dict[int, Dict[str, Any]],
+                viewport: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """
+    Attach rect/paint/viewport facts to AX refs and flag likely occlusion:
+    a ref whose center is covered by a higher-paint-order box from the full
+    layout set is marked occluded (its click point would hit something else).
+    """
+    boxes = [
+        (info.get("paint_order") or 0, info.get("rect"))
+        for info in layout_by_backend.values() if info.get("rect")
+    ]
+    vp = viewport or {}
+    vx, vy = vp.get("pageX", 0), vp.get("pageY", 0)
+    vw, vh = vp.get("clientWidth"), vp.get("clientHeight")
+    for ref in refs:
+        info = layout_by_backend.get(ref.get("backend_id")) or {}
+        rect = info.get("rect")
+        ref["rect"] = rect
+        ref["paint_order"] = info.get("paint_order")
+        if rect and vw and vh:
+            ref["in_viewport"] = not (
+                rect["x"] + rect["width"] < vx or rect["x"] > vx + vw
+                or rect["y"] + rect["height"] < vy or rect["y"] > vy + vh
+            )
+        else:
+            ref["in_viewport"] = None
+        ref["occluded"] = False
+        if rect:
+            cx, cy = rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2
+            own = info.get("paint_order") or 0
+            for paint, other in boxes:
+                if paint > own and other["x"] <= cx <= other["x"] + other["width"] \
+                        and other["y"] <= cy <= other["y"] + other["height"]:
+                    ref["occluded"] = True
+                    break
+    return refs
+
+
 def build_ref_table(ax_nodes: List[Dict[str, Any]], include_text: bool = False) -> List[Dict[str, Any]]:
     """Assign [#ref] numbers to actionable/named AX nodes, keyed by backend id."""
     refs: List[Dict[str, Any]] = []
@@ -190,6 +258,10 @@ def _ref_line(r: Dict[str, Any]) -> str:
         states.append(f"checked={r['checked']}")
     if r.get("expanded") is not None:
         states.append(f"expanded={r['expanded']}")
+    if r.get("occluded"):
+        states.append("occluded")
+    if r.get("in_viewport") is False:
+        states.append("offscreen")
     suffix = f" [{' '.join(states)}]" if states else ""
     val = f" value={r['value']!r}" if r.get("value") else ""
     return f"[#{r['ref']}] {r['role']} {r['name']!r}{val}{suffix}"

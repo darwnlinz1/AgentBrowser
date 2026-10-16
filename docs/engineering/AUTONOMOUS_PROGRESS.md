@@ -245,3 +245,7 @@ agent_browser/protobuf_decode.py decodes the protobuf wire format without a sche
 ## 2026-10-16 cycle 44: metadata + DOM fallback hygiene
 
 Runtime exceptions now persist className/scriptId/exceptionId and an origin (uncaught vs promise rejection), for both page exceptions and Runtime.evaluate failures. The page-HTML DOM fallback in dom.py and source_inspector.py addresses the root by backendNodeId at depth 0 instead of a depth:-1 getDocument that invalidates frontend nodeIds.
+
+## 2026-10-16 cycle 45: DOMSnapshot layout join
+
+AX snapshots can join DOMSnapshot layout onto refs (document rects, paint order, viewport membership, and occlusion when a higher-paint-order box covers the ref center); the default AX view requests it and marks refs [occluded]/[offscreen]. Merkle hashing deliberately excludes geometry, so scrolling does not churn diffs.
