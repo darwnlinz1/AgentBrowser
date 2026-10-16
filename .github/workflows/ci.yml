@@ -58,3 +58,5 @@ jobs:
         run: python fixtures/run_journal_minimize_live.py
       - name: DebugLoop episode (OBSERVE..VERIFY)
         run: python fixtures/run_debug_loop_live.py
+      - name: Replay fidelity (hermetic, zero live escapes)
+        run: python fixtures/run_replay_fidelity_live.py

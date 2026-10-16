@@ -16,6 +16,40 @@ def attribution_scores(predicted: Set[str], truth: Set[str]) -> Dict[str, float]
     return {"tp": tp, "fp": fp, "fn": fn, "precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4)}
 
 
+def replay_fidelity(recorded, replayed) -> Dict[str, float]:
+    """
+    Replay fidelity between a recorded run and a hermetic replay.
+
+    Both are sequences of ``(path, status, body)`` response triples. Pairs
+    are matched per path in occurrence order; a pair is exact when status
+    and body both match. Missing or extra replayed responses lower the
+    score; fidelity is 1.0 only for a byte-exact replay.
+    """
+    from collections import defaultdict
+
+    rec_by_path: Dict[str, list] = defaultdict(list)
+    rep_by_path: Dict[str, list] = defaultdict(list)
+    for path, status, body in recorded:
+        rec_by_path[path].append((status, body))
+    for path, status, body in replayed:
+        rep_by_path[path].append((status, body))
+    total = sum(len(v) for v in rec_by_path.values())
+    matched = 0
+    for path, recs in rec_by_path.items():
+        reps = rep_by_path.get(path, [])
+        for i, pair in enumerate(recs):
+            if i < len(reps) and reps[i] == pair:
+                matched += 1
+    extra = sum(max(0, len(rep_by_path.get(p, [])) - len(recs)) for p, recs in rec_by_path.items())
+    extra += sum(len(v) for p, v in rep_by_path.items() if p not in rec_by_path)
+    return {
+        "recorded": total,
+        "matched": matched,
+        "extra_replayed": extra,
+        "fidelity": round(matched / total, 4) if total else 1.0,
+    }
+
+
 def dropped_event_rate(dropped: int, total: int) -> float:
     if total <= 0:
         return 0.0

@@ -36,6 +36,12 @@ def _make_handler():
         def _dispatch(self):
             parsed = urlparse(self.path)
             path = parsed.path
+            # Hit accounting: lets harnesses prove a hermetic replay phase
+            # sent zero requests to the live server.
+            srv = self.server
+            srv.hit_count = getattr(srv, "hit_count", 0) + 1
+            srv.hit_paths = getattr(srv, "hit_paths", [])
+            srv.hit_paths.append(path)
             if path == "/" or path == "/index.json":
                 payload = {"cases": sorted(CASES_BY_ID), "count": len(CASES_BY_ID)}
                 return self._send(200, {"Content-Type": "application/json"}, json.dumps(payload))
@@ -92,6 +98,18 @@ class FixtureServer:
 
     def case_url(self, case_id: str) -> str:
         return f"{self.base_url}/case/{case_id}"
+
+    @property
+    def hit_count(self) -> int:
+        if self._server is None:
+            return 0
+        return getattr(self._server, "hit_count", 0)
+
+    @property
+    def hit_paths(self):
+        if self._server is None:
+            return []
+        return list(getattr(self._server, "hit_paths", []))
 
     def __enter__(self) -> "FixtureServer":
         self._server = _QuietServer(("127.0.0.1", 0), _make_handler())

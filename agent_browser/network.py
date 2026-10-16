@@ -128,6 +128,10 @@ class NetworkEngine:
         # buffers below truncate, instead of frames vanishing silently.
         self._ws_seq: Dict[Any, int] = {}
         self._sse_seq: Dict[Any, int] = {}
+        # Bodies served by hermetic fulfill, keyed by Network requestId.
+        # Fetch.requestPaused can arrive before Network.requestWillBeSent,
+        # so the body may need to wait for its entry to exist.
+        self._fulfill_bodies: Dict[Any, str] = {}
         self.intercept_rules: Dict[str, InterceptRule] = {}
         self.interception_enabled = False
         self.smart_filter: bool = True
@@ -178,6 +182,12 @@ class NetworkEngine:
         gaps = entry.setdefault("capture_gaps", [])
         if gap not in gaps:
             gaps.append(gap)
+
+    def _apply_fulfill_body(self, req_id, entry: Dict[str, Any]):
+        body = self._fulfill_bodies.pop(req_id, None)
+        if body is not None and entry.get("response_body") is None:
+            entry["response_body"] = body
+            entry["body_source"] = "hermetic_fulfill"
 
     def _apply_pending_extra(self, req_id: str, entry: Dict[str, Any]):
         extra = self._pending_extra.pop(req_id, None)
@@ -452,6 +462,7 @@ class NetworkEngine:
             else:
                 entry["post_data_complete"] = True
             self._apply_pending_extra(req_id, entry)
+            self._apply_fulfill_body(req_id, entry)
             self.requests[req_id] = entry
             if req_id not in self.traffic_order:
                 self.traffic_order.append(req_id)
@@ -500,6 +511,7 @@ class NetworkEngine:
             req_id = params.get("requestId")
             if req_id in self.requests:
                 entry = self.requests[req_id]
+                self._apply_fulfill_body(req_id, entry)
                 finish_ts = params.get("timestamp")
                 if params.get("encodedDataLength") is not None:
                     entry["encoded_data_length"] = params.get("encodedDataLength")
@@ -600,6 +612,21 @@ class NetworkEngine:
                     "responseHeaders": payload.get("resp_headers") or [],
                     "body": payload.get("body_b64") or "",
                 }, session_id=target_sid)
+                # Fulfilled bodies are not in the network stack's cache, so
+                # getResponseBody would fail with "No data found". Record
+                # exactly what the page received; it is stamped onto the
+                # entry when the entry exists (the Fetch pause can precede
+                # Network.requestWillBeSent, hence the pending map).
+                if payload.get("body_b64"):
+                    try:
+                        text = base64.b64decode(payload["body_b64"]).decode("utf-8", "replace")
+                        net_id = params.get("networkId") or fetch_id
+                        self._fulfill_bodies[net_id] = text
+                        entry = self.requests.get(net_id)
+                        if entry is not None:
+                            self._apply_fulfill_body(net_id, entry)
+                    except Exception:
+                        pass
                 return
 
             # 6a. Response stage: match-and-replace on the live response.
