@@ -97,7 +97,14 @@ def main() -> int:
                   str([(k, v.get("confidence")) for k, v in by_path.items()]))
             rc, out, _ = cli("stop")
             check("cli stop", rc == 0)
-            time.sleep(1.0)
+            # Graceful shutdown closes a real browser; on a loaded CI
+            # runner that can take well over a second. Poll for exit
+            # instead of sleeping a fixed 1s (the assertion is unchanged:
+            # the daemon MUST exit after stop).
+            for _ in range(60):
+                if daemon.poll() is not None:
+                    break
+                time.sleep(0.25)
             check("daemon exited", daemon.poll() is not None)
         finally:
             if daemon.poll() is None:
