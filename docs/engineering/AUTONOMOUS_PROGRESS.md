@@ -249,3 +249,7 @@ Runtime exceptions now persist className/scriptId/exceptionId and an origin (unc
 ## 2026-10-16 cycle 45: DOMSnapshot layout join
 
 AX snapshots can join DOMSnapshot layout onto refs (document rects, paint order, viewport membership, and occlusion when a higher-paint-order box covers the ref center); the default AX view requests it and marks refs [occluded]/[offscreen]. Merkle hashing deliberately excludes geometry, so scrolling does not churn diffs.
+
+## 2026-10-16 cycle 46: CLI --page routing + popup release fix
+
+CLI gained a global --page <session_id> that activates a tab before any command. Live debugging exposed a root bug: auto-attached popup targets never navigated (and the opener's Runtime.evaluate hung) because Chrome holds them until Runtime.runIfWaitingForDebugger -- now sent after domain setup for page and child sessions, Puppeteer TargetManager order. Verified direct (window.open returns, popup navigates) and via daemon CLI (--page view renders the popup's page).

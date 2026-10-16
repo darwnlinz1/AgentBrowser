@@ -138,6 +138,7 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Launch browser in headless mode")
     parser.add_argument("--port", type=int, default=None, help="Browser CDP port")
     parser.add_argument("--profile", default=None, help="Browser profile name or directory (e.g. dev1, debug_session2)")
+    parser.add_argument("--page", default=None, help="Page tab session id (from 'tabs') to activate before the command")
     parser.add_argument("--no-smart-filter", action="store_true", help="Disable smart asset filter")
 
     subparsers = parser.add_subparsers(dest="command")
@@ -387,6 +388,10 @@ def main():
     # For all other commands, ensure server is up
     smart_filter = not getattr(args, "no_smart_filter", False)
     ensure_server(args.server, headless=args.headless, browser_port=args.port, profile=args.profile, smart_filter=smart_filter)
+
+    # --page: route this command to a specific attached tab first.
+    if getattr(args, "page", None) and args.command not in ("tabs", "activate-tab"):
+        make_request("POST", "/targets/activate", {"session_id": args.page}, server_url=args.server)
 
     if args.command == "status":
         res = make_request("GET", "/session/status", server_url=args.server)

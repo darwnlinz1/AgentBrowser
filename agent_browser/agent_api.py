@@ -241,6 +241,14 @@ class AgentBrowserController:
             self.source_inspector.enable(session_id=sid),
             return_exceptions=True,
         )
+        # Chrome holds auto-attached page targets until released, even with
+        # waitForDebuggerOnStart=false (a window.open popup otherwise never
+        # navigates and the opener's evaluate hangs). Release after setup,
+        # the same order Puppeteer's TargetManager uses.
+        try:
+            await self.cdp.send("Runtime.runIfWaitingForDebugger", {}, session_id=sid)
+        except Exception:
+            pass
 
     async def _enable_child_session(self, sid: Optional[str]):
         """
@@ -258,6 +266,10 @@ class AgentBrowserController:
             self.source_inspector.enable_for_session(sid),
             return_exceptions=True,
         )
+        try:
+            await self.cdp.send("Runtime.runIfWaitingForDebugger", {}, session_id=sid)
+        except Exception:
+            pass
 
     async def reconnect(self) -> Dict[str, Any]:
         """
