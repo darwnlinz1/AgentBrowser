@@ -82,6 +82,10 @@ def _causal_edge_present(trace: Dict[str, Any]) -> bool:
     )
 
 
+ALLOWED_ACTIONS = ("click", "type", "navigate", "eval", "hover", "scroll")
+MAX_VERIFY_RUNS = 10
+
+
 class DebugLoop:
     """One evidence-gated debugging episode over an AgentBrowserController."""
 
@@ -106,6 +110,12 @@ class DebugLoop:
         an external regression check and returns True when the bug reproduces.
         Without a fix hook, VERIFY honestly reports the un-fixed state.
         """
+        if action not in ALLOWED_ACTIONS:
+            raise ValueError(
+                f"unsupported debug action {action!r}; expected one of {ALLOWED_ACTIONS}")
+        # Clamp reruns so API/MCP callers cannot turn one episode into an
+        # unbounded trace loop against the daemon.
+        verify_runs = min(MAX_VERIFY_RUNS, max(1, int(verify_runs)))
         started = time.perf_counter()
         loop = self.state
 
@@ -199,6 +209,7 @@ class DebugLoop:
             "baseline_health": baseline.get("health"),
             "diagnostics_health": diagnostics.get("health"),
             "hypotheses": diagnostics.get("hypotheses"),
+            "verify_runs": verify_runs,
             "regression_source": "external_runner" if regression_runner is not None else "trace_oracle",
             "symptom_after_runs": symptom_after,
             "ledger": loop.ledger,

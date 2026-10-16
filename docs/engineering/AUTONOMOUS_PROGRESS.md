@@ -265,3 +265,7 @@ agent_browser/loop_engine.py drives one OBSERVE->INSPECT->TRACE->DEBUG->MODIFY->
 ## 2026-10-16 cycle 49: debug loop surfaces
 
 DebugLoop is now reachable from every operator surface, not just the Python API: POST /debug/episode (url, action, target, verify_runs), CLI `debug-loop <url> --target <#ref>`, and MCP tool `debug_episode` (diagnostics tier, 22 tools total). No fix hook travels across these boundaries, so VERIFY honestly reports BLOCKED while the bug persists; the fixed path stays Python-API/MCP composition. Gate: 27 Chrome-free passed across loop/perf/MCP/docs/hardening suites.
+
+## 2026-10-16 cycle 50: consolidated gate sweep + DebugLoop input hardening
+
+Full post-cycle-49 sweep, all green with no regression: 159 Chrome-free pytest passed (up from the 132 baseline at first commit; one new test added this cycle); live fault corpus 10/10 PASS with attribution precision = recall = 1.0, false-background = 0, dropped events = 0; live integration suite 7/7; live DebugLoop episode DONE/verified with 6/6 gates and time-to-root-cause 284.7ms. Code review of the cycle-49 surface diff found two hardening gaps, fixed at the shared core so server, CLI, and MCP all inherit them: DebugLoop now rejects unknown actions with ValueError before any page work (previously a silent no-op episode via tracer fall-through), and verify_runs is clamped to 1..10 (previously unbounded reruns could turn one API call into a long trace loop). The clamped value is reported back as verify_runs.

@@ -90,6 +90,22 @@ async def test_episode_verifies_only_with_a_real_fix():
 
 
 @pytest.mark.asyncio
+async def test_episode_rejects_unknown_action_and_clamps_verify_runs():
+    ctrl = _FakeCtrl()
+    with pytest.raises(ValueError, match="unsupported debug action"):
+        await DebugLoop(ctrl).run_episode("http://local/case", action="teleport")
+    assert ctrl.navigated == []  # rejected before any page work
+
+    async def fix(c):
+        c.fixed = True
+
+    report = await DebugLoop(ctrl).run_episode(
+        "http://local/case", target="#go", fix_hook=fix, verify_runs=999)
+    assert report["verify_runs"] == 10
+    assert len(report["symptom_after_runs"]) == 10
+
+
+@pytest.mark.asyncio
 async def test_episode_without_fix_stays_blocked():
     ctrl = _FakeCtrl()
     report = await DebugLoop(ctrl).run_episode("http://local/case", target="#go", verify_runs=2)
