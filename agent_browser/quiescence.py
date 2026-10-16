@@ -107,6 +107,13 @@ class NetworkActivityMonitor:
     transports are classified non-blocking via ``is_long_lived``.
     """
 
+    # Only these CDP methods mutate the ledger; declaring them lets the
+    # listener skip full params parsing for unrelated event traffic.
+    CDP_METHODS = frozenset({
+        "Network.requestWillBeSent", "Network.loadingFinished",
+        "Network.loadingFailed", "Runtime.exceptionThrown",
+    })
+
     def __init__(self):
         self.in_flight: Set[str] = set()
         self.long_lived: Set[str] = set()

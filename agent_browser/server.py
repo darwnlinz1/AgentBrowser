@@ -394,6 +394,7 @@ async def session_status():
         "profile_dir": controller.profile_dir if is_active else None,
         "smart_filter": (controller.network.smart_filter if (is_active and controller.network) else None),
         "dropped_events": (controller.cdp.dropped_events if (is_active and controller.cdp) else 0),
+        "skipped_events": (getattr(controller.cdp, "skipped_events", 0) if (is_active and controller.cdp) else 0),
     }
 
 

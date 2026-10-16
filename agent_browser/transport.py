@@ -95,22 +95,40 @@ class PipeCDPClient:
         # CDPConnection-compatible surface (subset used by the controller).
         self.generation = 1
         self.dropped_events = 0
+        self.skipped_events = 0
         self.sync_handler_errors = 0
         self.on_drop = None
+        self._sync_interest: dict = {}
+        self._event_interest: dict = {}
 
-    def add_event_handler(self, handler) -> None:
+    @staticmethod
+    def _resolve_interest(handler, methods):
+        if methods is not None:
+            return frozenset(methods)
+        declared = getattr(handler, "cdp_methods", None)
+        return frozenset(declared) if declared else None
+
+    def _interested(self, handlers, interest, method):
+        return [h for h in handlers
+                if interest.get(h) is None or method in interest[h]]
+
+    def add_event_handler(self, handler, methods=None) -> None:
         self._handlers.append(handler)
+        self._event_interest[handler] = self._resolve_interest(handler, methods)
 
     def remove_event_handler(self, handler) -> None:
         if handler in self._handlers:
             self._handlers.remove(handler)
+        self._event_interest.pop(handler, None)
 
-    def add_sync_handler(self, handler) -> None:
+    def add_sync_handler(self, handler, methods=None) -> None:
         self._sync_handlers.append(handler)
+        self._sync_interest[handler] = self._resolve_interest(handler, methods)
 
     def remove_sync_handler(self, handler) -> None:
         if handler in self._sync_handlers:
             self._sync_handlers.remove(handler)
+        self._sync_interest.pop(handler, None)
 
     async def connect(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -137,6 +155,15 @@ class PipeCDPClient:
                     del buf[: idx + 1]
                     if frame:
                         try:
+                            envelope = codec.decode_envelope(frame)
+                            if envelope is not None and envelope.method:
+                                interested = (
+                                    self._interested(self._sync_handlers, self._sync_interest, envelope.method)
+                                    + self._interested(self._handlers, self._event_interest, envelope.method))
+                                if not interested:
+                                    self.skipped_events += 1
+                                    idx = buf.find(b"\x00")
+                                    continue
                             self._dispatch(_json.loads(frame))
                         except Exception:
                             pass
@@ -164,13 +191,13 @@ class PipeCDPClient:
                 self._loop.call_soon_threadsafe(fut.set_result, obj)
             return
         if obj.get("method"):
-            for fn in list(self._sync_handlers):
+            for fn in self._interested(self._sync_handlers, self._sync_interest, obj["method"]):
                 try:
                     fn(obj)
                 except Exception:
                     self.sync_handler_errors += 1
             if self._loop is not None:
-                for handler in list(self._handlers):
+                for handler in self._interested(self._handlers, self._event_interest, obj["method"]):
                     try:
                         res = handler(obj)
                         if asyncio.iscoroutine(res):

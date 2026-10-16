@@ -23,14 +23,20 @@ try:  # optional [fast] extra
     FAST_CODEC = "msgspec"
 
     class Envelope(_Struct, gc=False):
-        """Cheap routing view of a CDP frame: params/result stay Raw."""
+        """Cheap routing view of a CDP frame: params/result stay Raw.
+
+        Raw fields use an empty-Raw default instead of ``Raw | None``:
+        msgspec resolves that union to the ``None`` branch and rejects any
+        present value ("Expected null, got object"), which silently killed
+        envelope routing for every non-empty frame.
+        """
 
         id: int | None = None
         method: str | None = None
         sessionId: str | None = None
-        params: _Raw | None = None
-        result: _Raw | None = None
-        error: _Raw | None = None
+        params: _Raw = _Raw()
+        result: _Raw = _Raw()
+        error: _Raw = _Raw()
 
     _envelope_decoder = _msgspec.json.Decoder(Envelope)
 except Exception:  # pragma: no cover - exercised only without the extra
@@ -59,7 +65,7 @@ def decode_envelope(data: Any):
 
 def decode_raw(raw: Any) -> Any:
     """Decode a Raw slice captured by the envelope (or plain bytes/str)."""
-    if raw is None:
+    if not raw:
         return None
     return loads(bytes(raw) if not isinstance(raw, (bytes, str)) else raw)
 

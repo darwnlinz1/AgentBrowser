@@ -165,7 +165,8 @@ class AgentBrowserController:
 
         # Wire event handlers. The activity monitor is a synchronous
         # subscriber: its ledger cannot be shed by the async handler cap.
-        self.cdp.add_sync_handler(self.activity_monitor.on_event)
+        self.cdp.add_sync_handler(self.activity_monitor.on_event,
+                                  methods=NetworkActivityMonitor.CDP_METHODS)
         # Opt-in flight recorder (AGENTBROWSER_JOURNAL=<path>): sync, so the
         # journal cannot lose events to the async handler cap.
         from agent_browser.journal import JournalRecorder, journal_path_from_env

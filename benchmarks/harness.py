@@ -28,6 +28,7 @@ from agent_browser.ringbuffer import EventRingBuffer
 
 
 def _timeit(fn, iterations: int) -> float:
+    fn()  # warm up caches/JIT-ish paths so small-N runs are not noise
     start = time.perf_counter()
     for _ in range(iterations):
         fn()
@@ -43,23 +44,41 @@ def bench_codec(iterations: int = 20000) -> Dict[str, Any]:
     envelope = None
     large_result_envelope = None
     large_result_full = None
+    flat_envelope = flat_full = None
     if codec.FAST_CODEC == "msgspec":
         envelope = _timeit(lambda: codec.decode_envelope(text), iterations)
         # Routing a reply with a large result: the listener only needs the
-        # envelope; parsing the 20KB result happens once, in send().
-        reply = codec.dumps({"id": 7, "result": {"body": "x" * 20000, "base64Encoded": False}})
+        # envelope; parsing the result happens once, in send(). The fixture
+        # is a nested CDP-shaped result (AX/DOM-style nodes): envelope
+        # routing measured ~6x faster there. A flat 20KB string body is the
+        # worst case (scan-bound, ~0.93x) and is reported separately below
+        # instead of being hidden.
+        nodes = [{
+            "nodeId": str(i), "backendDOMNodeId": i,
+            "role": {"type": "role", "value": "button"},
+            "name": {"type": "text", "value": f"Action number {i} with a label"},
+            "properties": [{"name": "focusable", "value": {"type": "boolean", "value": True}}],
+            "childIds": [str(i + 1)],
+        } for i in range(800)]
+        reply = codec.dumps({"id": 7, "result": {"nodes": nodes}})
         large_result_envelope = _timeit(lambda: codec.decode_envelope(reply), iterations // 4)
         large_result_full = _timeit(lambda: codec.loads(reply), iterations // 4)
+        flat = codec.dumps({"id": 7, "result": {"body": "x" * 20000, "base64Encoded": False}})
+        flat_envelope = _timeit(lambda: codec.decode_envelope(flat), iterations // 4)
+        flat_full = _timeit(lambda: codec.loads(flat), iterations // 4)
     return {
         "codec": codec.FAST_CODEC,
         "encode_frames_per_sec": _timeit(lambda: codec.dumps(frame), iterations),
         "decode_frames_per_sec": _timeit(lambda: codec.loads(text), iterations),
         # Reply routing cost after cycle 24: envelope-only decode. At event
         # frame sizes this is comparable to a full decode; the win is on
-        # replies carrying large results, which the listener no longer parses.
+        # replies carrying large structured results, which the listener no
+        # longer parses.
         "envelope_decode_frames_per_sec": envelope,
         "large_reply_envelope_per_sec": large_result_envelope,
         "large_reply_full_decode_per_sec": large_result_full,
+        "flat_reply_envelope_per_sec": flat_envelope,
+        "flat_reply_full_decode_per_sec": flat_full,
         "iterations": iterations,
     }
 

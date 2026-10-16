@@ -134,6 +134,13 @@ class CDPConnection:
         # They must be O(1) and never await.
         self.sync_handlers: List[Callable[[Dict[str, Any]], None]] = []
         self.sync_handler_errors = 0
+        # Cycle 51: method-interest registry. A handler may declare the CDP
+        # methods it consumes; the listener then skips the full params parse
+        # for events nobody declared interest in (counted, never silent).
+        # Handlers without a declaration stay catch-all.
+        self.skipped_events = 0
+        self._sync_interest: Dict[Any, Any] = {}
+        self._event_interest: Dict[Any, Any] = {}
 
     def _fail_pending(self, generation: int, reason: str):
         """Fail only futures issued on this generation. Leave a newer generation alone."""
@@ -179,20 +186,36 @@ class CDPConnection:
             task.cancel()
         self._handler_tasks.clear()
 
-    def add_event_handler(self, handler: Callable[[Dict[str, Any]], Any]):
+    @staticmethod
+    def _resolve_interest(handler, methods):
+        if methods is not None:
+            return frozenset(methods)
+        declared = getattr(handler, "cdp_methods", None)
+        return frozenset(declared) if declared else None
+
+    @staticmethod
+    def _interested(handlers, interest, method):
+        return [h for h in handlers
+                if interest.get(h) is None or method in interest[h]]
+
+    def add_event_handler(self, handler: Callable[[Dict[str, Any]], Any], methods=None):
         self.event_handlers.append(handler)
+        self._event_interest[handler] = self._resolve_interest(handler, methods)
 
     def remove_event_handler(self, handler: Callable[[Dict[str, Any]], Any]):
         if handler in self.event_handlers:
             self.event_handlers.remove(handler)
+        self._event_interest.pop(handler, None)
 
-    def add_sync_handler(self, handler: Callable[[Dict[str, Any]], None]):
+    def add_sync_handler(self, handler: Callable[[Dict[str, Any]], None], methods=None):
         """Register an inline (never-dropped) synchronous event subscriber."""
         self.sync_handlers.append(handler)
+        self._sync_interest[handler] = self._resolve_interest(handler, methods)
 
     def remove_sync_handler(self, handler: Callable[[Dict[str, Any]], None]):
         if handler in self.sync_handlers:
             self.sync_handlers.remove(handler)
+        self._sync_interest.pop(handler, None)
 
     def _schedule_handler(self, coro, critical: bool = False):
         # A Fetch.requestPaused handler must never be dropped: a dropped pause
@@ -246,7 +269,8 @@ class CDPConnection:
                     raise RuntimeError(f"CDP Error [{method}]: {res['error'].get('message', res['error'])}")
                 return res.get("result", {})
             # Raw-envelope reply: parse only the result slice, here on demand.
-            if getattr(res, "error", None) is not None:
+            # (error is an empty Raw when absent, so truthiness is the test.)
+            if getattr(res, "error", None):
                 err = _codec.decode_raw(res.error)
                 message = err.get("message", err) if isinstance(err, dict) else err
                 raise RuntimeError(f"CDP Error [{method}]: {message}")
@@ -277,6 +301,18 @@ class CDPConnection:
                     if fut and not fut.done() and getattr(fut, "_cdp_generation", None) == generation:
                         fut.set_result(envelope)
                     continue
+                sync_interested = event_interested = None
+                if envelope is not None and envelope.method:
+                    # Cheap routing decision: if no registered handler
+                    # declared interest in this method, skip the full
+                    # params parse entirely (counted as skipped_events).
+                    sync_interested = self._interested(
+                        self.sync_handlers, self._sync_interest, envelope.method)
+                    event_interested = self._interested(
+                        self.event_handlers, self._event_interest, envelope.method)
+                    if not sync_interested and not event_interested:
+                        self.skipped_events += 1
+                        continue
                 data = _codec.loads(raw)
             except asyncio.CancelledError:
                 break
@@ -307,14 +343,16 @@ class CDPConnection:
                 continue
 
             if data.get("method"):
-                for sync_fn in list(self.sync_handlers):
+                for sync_fn in list(sync_interested if sync_interested is not None
+                                     else self.sync_handlers):
                     try:
                         sync_fn(data)
                     except Exception:
                         self.sync_handler_errors += 1
 
             critical = data.get("method") == "Fetch.requestPaused"
-            for handler in list(self.event_handlers):
+            for handler in list(event_interested if event_interested is not None
+                                else self.event_handlers):
                 try:
                     res = handler(data)
                     if asyncio.iscoroutine(res):
