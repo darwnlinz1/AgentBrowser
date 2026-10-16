@@ -68,6 +68,8 @@ class NetworkEngine:
         self.requests: Dict[str, Dict[str, Any]] = {}  # requestId -> entry
         self.traffic_order: List[str] = []
         self.ws_frames: List[Dict[str, Any]] = []
+        self.ws_sockets: Dict[str, Dict[str, Any]] = {}
+        self.sse_messages: List[Dict[str, Any]] = []
         self.intercept_rules: Dict[str, InterceptRule] = {}
         self.interception_enabled = False
         self.smart_filter: bool = True
@@ -441,18 +443,49 @@ class NetworkEngine:
                 entry["error_text"] = params.get("errorText")
                 entry["canceled"] = params.get("canceled", False)
 
-        # 5. WebSocket frames
+        # 5. WebSocket lifecycle + frames (semantically decoded)
+        elif method == "Network.webSocketCreated":
+            rid = params.get("requestId")
+            self.ws_sockets[rid] = {
+                "requestId": rid, "url": params.get("url"), "state": "created",
+                "initiator": params.get("initiator"), "frames_sent": 0, "frames_received": 0,
+            }
+
+        elif method == "Network.webSocketClosed":
+            sock = self.ws_sockets.setdefault(params.get("requestId"), {"requestId": params.get("requestId")})
+            sock["state"] = "closed"
+            sock["closed_at"] = params.get("timestamp")
+
         elif method in ("Network.webSocketFrameReceived", "Network.webSocketFrameSent"):
+            from agent_browser.stream_decode import decode_ws_payload
+
             resp = params.get("response", {})
+            payload = resp.get("payloadData")
+            direction = "sent" if method.endswith("Sent") else "received"
+            sock = self.ws_sockets.setdefault(params.get("requestId"), {"requestId": params.get("requestId"), "state": "open"})
+            sock["frames_sent" if direction == "sent" else "frames_received"] = sock.get(
+                "frames_sent" if direction == "sent" else "frames_received", 0) + 1
             self.ws_frames.append({
-                "type": "sent" if method.endswith("Sent") else "received",
+                "type": direction,
                 "requestId": params.get("requestId"),
                 "timestamp": params.get("timestamp"),
                 "opcode": resp.get("opcode"),
-                "payload": resp.get("payloadData")
+                "payload": payload,
+                "decoded": decode_ws_payload(payload, resp.get("opcode")),
             })
             if len(self.ws_frames) > 2000:
                 self.ws_frames.pop(0)
+
+        # 5b. Server-Sent Events
+        elif method == "Network.eventSourceMessageReceived":
+            from agent_browser.stream_decode import parse_sse_chunk
+
+            msg = parse_sse_chunk(params.get("data"), params.get("eventName"), params.get("eventId"))
+            msg["requestId"] = params.get("requestId")
+            msg["timestamp"] = params.get("timestamp")
+            self.sse_messages.append(msg)
+            if len(self.sse_messages) > 2000:
+                self.sse_messages.pop(0)
 
         # 6. Fetch / Intercepted Request
         elif method == "Fetch.requestPaused":
@@ -1034,5 +1067,34 @@ class NetworkEngine:
         if count == 0:
             lines.append("  (No relevant API or document requests captured yet)")
 
+        stream = self.get_stream_summary()
+        if stream["websocket_frames"] or stream["sse_messages"]:
+            lines.append("\n=== STREAMS ===")
+            for sock in stream["sockets"]:
+                lines.append(
+                    f"WS {sock.get('url') or sock.get('requestId')} [{sock.get('state')}] "
+                    f"sent={sock.get('frames_sent', 0)} received={sock.get('frames_received', 0)}")
+            for frame in stream["recent_events"]:
+                lines.append(f"  {frame['type']} {frame['decoded'].get('kind')}"
+                             f"{(' ' + str(frame['decoded'].get('event'))) if frame['decoded'].get('event') else ''}"
+                             f": {frame['decoded'].get('preview', '')[:120]}")
+            for msg in stream["recent_sse"]:
+                lines.append(f"  SSE {msg.get('event')}: {msg.get('preview', '')[:120]}")
+
         return "\n".join(lines)
+
+    def get_stream_summary(self, recent: int = 5) -> Dict[str, Any]:
+        """Decoded WebSocket/SSE overview (heartbeats counted, not previewed)."""
+        events = [
+            f for f in self.ws_frames
+            if not (f.get("decoded") or {}).get("heartbeat")
+        ][-recent:]
+        return {
+            "sockets": list(self.ws_sockets.values()),
+            "websocket_frames": len(self.ws_frames),
+            "heartbeats": sum(1 for f in self.ws_frames if (f.get("decoded") or {}).get("heartbeat")),
+            "sse_messages": len(self.sse_messages),
+            "recent_events": events,
+            "recent_sse": self.sse_messages[-recent:],
+        }
 

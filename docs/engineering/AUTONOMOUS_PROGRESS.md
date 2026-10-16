@@ -229,3 +229,7 @@ AX refs are revalidated against Accessibility.getPartialAXTree before resolve/cl
 ## 2026-10-16 cycle 40: human handoff
 
 Controller handoff protocol: start_handoff pauses the agent (navigate/trace/evaluate/screenshot refused), shows an in-page 'human in control' banner, and complete_handoff resumes with a summary of the human actions captured meanwhile. Routes /handoff, /handoff/start, /handoff/complete + CLI handoff start|status|complete. Live: banner present, trace blocked during handoff, resume works.
+
+## 2026-10-16 cycle 41: WebSocket/SSE semantics
+
+agent_browser/stream_decode.py classifies WebSocket payloads (Socket.IO events, JSON, heartbeats, binary) and SSE messages; NetworkEngine now records socket lifecycle (created/closed, per-direction frame counts) and Network.eventSourceMessageReceived, and the AI traffic summary gains a decoded STREAMS section. Live: bidirectional Socket.IO chat decoded by event name, SSE reading parsed to {temp: 21}.
