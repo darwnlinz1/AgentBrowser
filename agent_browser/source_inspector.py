@@ -501,12 +501,14 @@ class SourceInspector:
         except Exception:
             pass
 
-        # Fallback to CDP DOM domain
+        # Fallback to CDP DOM domain, addressed by backendNodeId (a depth:-1
+        # getDocument invalidates frontend nodeIds; see dom.py).
         try:
-            doc_res = await self.cdp.send("DOM.getDocument", {"depth": -1}, session_id=sid)
-            node_id = doc_res.get("root", {}).get("nodeId")
-            if node_id:
-                html_res = await self.cdp.send("DOM.getOuterHTML", {"nodeId": node_id}, session_id=sid)
+            doc_res = await self.cdp.send("DOM.getDocument", {"depth": 0}, session_id=sid)
+            root = doc_res.get("root", {})
+            backend_id = root.get("backendNodeId")
+            if backend_id:
+                html_res = await self.cdp.send("DOM.getOuterHTML", {"backendNodeId": backend_id}, session_id=sid)
                 return html_res.get("outerHTML") or ""
         except Exception:
             pass

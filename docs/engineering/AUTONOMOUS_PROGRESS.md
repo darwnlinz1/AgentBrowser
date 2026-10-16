@@ -241,3 +241,7 @@ agent_browser/wasm_inspect.py parses WASM section tables, function counts, impor
 ## 2026-10-16 cycle 43: protobuf/gRPC-Web decoding
 
 agent_browser/protobuf_decode.py decodes the protobuf wire format without a schema (varints, fixed, length-delimited, heuristic nested messages) and splits gRPC-Web flag+length frames including trailers. Binary WebSocket frames now attempt a blackbox protobuf decode before falling back to an opaque label. Wire-level facts only -- field meanings require a schema and are not guessed.
+
+## 2026-10-16 cycle 44: metadata + DOM fallback hygiene
+
+Runtime exceptions now persist className/scriptId/exceptionId and an origin (uncaught vs promise rejection), for both page exceptions and Runtime.evaluate failures. The page-HTML DOM fallback in dom.py and source_inspector.py addresses the root by backendNodeId at depth 0 instead of a depth:-1 getDocument that invalidates frontend nodeIds.

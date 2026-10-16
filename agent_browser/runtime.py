@@ -59,6 +59,10 @@ class RuntimeEngine:
             entry = {
                 "text": details.get("text"),
                 "description": exc.get("description", details.get("text")),
+                "class_name": exc.get("className"),
+                "script_id": details.get("scriptId"),
+                "exception_id": details.get("exceptionId"),
+                "origin": "rejection" if (details.get("text") or "").startswith("Uncaught (in promise)") else "uncaught",
                 "url": details.get("url"),
                 "line": details.get("lineNumber"),
                 "column": details.get("columnNumber"),
@@ -159,6 +163,10 @@ class RuntimeEngine:
             self.exceptions.append({
                 "text": exception_details.get("text"),
                 "description": description,
+                "class_name": (exception_details.get("exception") or {}).get("className"),
+                "script_id": exception_details.get("scriptId"),
+                "exception_id": exception_details.get("exceptionId"),
+                "origin": "evaluate",
                 "url": exception_details.get("url"),
                 "line": exception_details.get("lineNumber"),
                 "column": exception_details.get("columnNumber"),
