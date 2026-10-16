@@ -1,11 +1,11 @@
 name: CI
 
 # Chrome-free gate battery: the same curated suites the local loop runs
-# before every commit. The live-corpus job additionally runs the seeded
-# fault corpus and the integration suite against the runner's real
-# Chrome (headless), so attribution metrics gate the PR too. The heavier
-# live harnesses (daemon smoke, interventional, journal minimize) stay
-# local/manual.
+# before every commit. The live-corpus job additionally runs the full
+# live battery against the runner's real Chrome (headless): seeded fault
+# corpus, integration suite, daemon smoke, interventional promotion,
+# journal minimization, and the DebugLoop episode -- so browser-truth
+# metrics gate the PR too, not just unit suites.
 on:
   pull_request:
   push:
@@ -50,3 +50,11 @@ jobs:
         run: python fixtures/run_live_corpus.py
       - name: Live integration suite
         run: python test_suite.py
+      - name: Daemon smoke (token auth, Origin guard, CLI)
+        run: python fixtures/run_daemon_smoke.py
+      - name: Interventional A/B promotion
+        run: python fixtures/run_intervention_live.py
+      - name: Journal-driven minimization
+        run: python fixtures/run_journal_minimize_live.py
+      - name: DebugLoop episode (OBSERVE..VERIFY)
+        run: python fixtures/run_debug_loop_live.py
