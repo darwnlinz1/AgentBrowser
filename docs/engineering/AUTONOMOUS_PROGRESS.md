@@ -257,3 +257,7 @@ CLI gained a global --page <session_id> that activates a tab before any command.
 ## 2026-10-16 cycle 47: scoped AX pin re-reads
 
 DOMEngine.get_scoped_axtree resolves a selector (or #ref) to a backend node and re-reads only that subtree via Accessibility.queryAXTree, returning refs plus a Merkle diff against the previous scoped read. FocusEngine exposes it per pin and /focus/view includes ax_regions. Live: a body pin re-reads the Hydrate button scoped, without a full-page capture.
+
+## 2026-10-16 cycle 48: DebugLoop orchestrator (loop tick)
+
+agent_browser/loop_engine.py drives one OBSERVE->INSPECT->TRACE->DEBUG->MODIFY->REPLAY->VERIFY episode: failure signature from the trace, causal edge = failing request tied to the action (a successful attributed request after a fix is not the edge), VERIFY via the positive-artifact gates in verify.py. Live on case 4 with an interception fix: state DONE, all 6 gates pass, symptom absent across 3 reruns, time-to-root-cause 295.8ms (fixtures/run_debug_loop_live.py).
