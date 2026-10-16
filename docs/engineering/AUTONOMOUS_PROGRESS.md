@@ -217,3 +217,7 @@ JavaScript dialogs are always answered (default dismiss, AGENTBROWSER_DIALOG_POL
 ## 2026-10-15 cycle 38: repro isolation
 
 Generated Python reproductions (synth.build_python_repro, diagnostics legacy + regression templates) now launch on find_free_port() with an isolated 'ab-repro' profile instead of the default 9223/debug_browser_profile -- the exact collision behind the leftover-Chrome profile lock observed in cycle 25. E2E re-verified (bug exit 0, fixed exit 1).
+
+## 2026-10-15 commit (owner-approved scope)
+
+Committed 116f347 'feat: HYPER-BROWSER engine' (100 files, safe group + tracked engine files + SKILL/README/test_suite for coherence; standalone staged tree verified 132 passed before committing). Never-commit group excluded per COMMIT_REVIEW.md. Push blocked: no GitHub SSH key on this machine and HTTPS credential flow needs interactive sign-in -- owner to run: git push -u origin hyper/phase0-foundation, then open the compare URL in the PR step.
